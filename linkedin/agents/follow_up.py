@@ -133,6 +133,15 @@ def _load_recent_messages(deal, limit: int = RECENT_MESSAGES_WINDOW) -> list:
     return list(reversed(list(qs)))
 
 
+def _count_total_messages(deal) -> int:
+    """Total ChatMessage count for this deal's lead (both sides)."""
+    from chat.models import ChatMessage
+    from django.contrib.contenttypes.models import ContentType
+
+    ct = ContentType.objects.get_for_model(type(deal.lead))
+    return ChatMessage.objects.filter(content_type=ct, object_id=deal.lead_id).count()
+
+
 def _render_system_prompt(session, deal, recent_messages: list) -> str:
     """Render the agent system prompt from the Jinja2 template."""
     from django.utils import timezone
@@ -151,11 +160,13 @@ def _render_system_prompt(session, deal, recent_messages: list) -> str:
         campaign_objective=campaign.campaign_objective or "",
         booking_link=campaign.booking_link or "",
         profile_summary=_format_facts(deal.profile_summary),
+        market_persona=_format_facts(campaign.market_persona),
         chat_summary=_format_facts(deal.chat_summary),
         recent_messages=_format_recent_messages(recent_messages, now),
         today=now.strftime("%Y-%m-%d"),
         days_since_last_outgoing=_days_since_last_outgoing(recent_messages, now),
         unanswered_outgoing=_count_unanswered_outgoing(recent_messages),
+        total_messages=_count_total_messages(deal),
     )
 
 

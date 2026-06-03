@@ -106,7 +106,8 @@ class TestMaterializeProfileSummary:
 
         with patch.object(deal_with_lead.lead, "get_profile", return_value=FAKE_PROFILE) as mock_refresh, \
              patch("linkedin.db.summaries.extract_facts",
-                   return_value=["Senior Engineer at Acme.", "URN ABC123."]) as mock_extract:
+                   return_value=["Senior Engineer at Acme.", "URN ABC123."]) as mock_extract, \
+             patch("linkedin.db.summaries.update_market_persona_from_profile"):
             materialize_profile_summary_if_missing(deal_with_lead, fake_session)
 
         mock_refresh.assert_called_once_with(fake_session)
@@ -324,3 +325,270 @@ class TestReconcileFacts:
             result = reconcile_facts([], ["Lead is in Berlin."])
 
         assert result == ["Lead is in Berlin."]
+
+
+class TestExtractMarketFacts:
+    def test_empty_input_returns_empty_list(self, db):
+        from linkedin.db.summaries import extract_market_facts
+
+        assert extract_market_facts("") == []
+        assert extract_market_facts("   \n  ") == []
+
+    def test_uses_market_prompt_not_lead_prompt(self, db):
+        from linkedin.db.summaries import extract_market_facts
+
+        captured: dict = {}
+        model = _capturing_function_model(
+            captured, {"facts": ["VP Engineering at Series B SaaS often struggle with observability tool sprawl."]},
+        )
+        with patch("linkedin.llm.get_llm_model", return_value=model):
+            extract_market_facts(
+                "Alice is VP Eng at Acme, a Series B SaaS. She says Datadog costs are too high.",
+                context="Campaign objective: sell observability platform",
+            )
+
+        rendered = "\n".join(
+            part.content
+            for msg in captured["messages"]
+            for part in msg.parts
+            if hasattr(part, "content") and isinstance(part.content, str)
+        )
+        assert "market-intelligence" in rendered.lower()
+        assert "generalization" in rendered.lower()
+        assert "Campaign objective" in rendered
+
+    def test_returns_market_level_facts(self, db):
+        from linkedin.db.summaries import extract_market_facts
+
+        output = ["VP Engineering at Series B SaaS often struggle with observability tool sprawl."]
+        model = _structured_test_model({"facts": output})
+        with patch("linkedin.llm.get_llm_model", return_value=model):
+            facts = extract_market_facts(
+                "Alice at Acme Corp says her Datadog bill doubled last quarter.",
+                context="observability platform",
+            )
+
+        assert facts == output
+
+
+class TestUpdateMarketPersona:
+    def _msg(self, content, is_outgoing):
+        m = MagicMock()
+        m.content = content
+        m.is_outgoing = is_outgoing
+        return m
+
+    def test_noop_on_empty_messages(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona(deal_with_lead, [])
+
+        mock_extract.assert_not_called()
+        deal_with_lead.campaign.refresh_from_db()
+        assert deal_with_lead.campaign.market_persona is None
+
+    def test_all_outgoing_burst_is_noop(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        msgs = [
+            self._msg("Hi there!", is_outgoing=True),
+            self._msg("Following up.", is_outgoing=True),
+        ]
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_extract.assert_not_called()
+
+    def test_extracts_and_reconciles_market_facts(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        msgs = [
+            self._msg("How do you handle observability at scale?", is_outgoing=True),
+            self._msg("We use Datadog but per-host pricing is killing us.", is_outgoing=False),
+        ]
+        market_facts = [
+            "Mid-market engineering teams on Datadog often hit cost walls as they scale.",
+        ]
+
+        with patch("linkedin.db.summaries.extract_market_facts",
+                   return_value=market_facts) as mock_extract, \
+             patch("linkedin.db.summaries.reconcile_facts",
+                   return_value=market_facts) as mock_reconcile:
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_extract.assert_called_once()
+        mock_reconcile.assert_called_once_with([], market_facts)
+        deal_with_lead.campaign.refresh_from_db()
+        assert deal_with_lead.campaign.market_persona == {"facts": market_facts}
+
+    def test_second_pass_reconciles_accumulated_facts(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        deal_with_lead.campaign.market_persona = {
+            "facts": ["Mid-market teams struggle with Datadog costs."],
+        }
+        deal_with_lead.campaign.save(update_fields=["market_persona"])
+
+        msgs = [self._msg("We're drowning in alerts — too many tools.", is_outgoing=False)]
+        new_facts = ["Engineers report alert fatigue from juggling multiple monitoring tools."]
+        reconciled = [
+            "Mid-market teams struggle with Datadog costs.",
+            "Engineers report alert fatigue from juggling multiple monitoring tools.",
+        ]
+
+        with patch("linkedin.db.summaries.extract_market_facts",
+                   return_value=new_facts), \
+             patch("linkedin.db.summaries.reconcile_facts",
+                   return_value=reconciled) as mock_reconcile:
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_reconcile.assert_called_once_with(
+            ["Mid-market teams struggle with Datadog costs."], new_facts,
+        )
+        deal_with_lead.campaign.refresh_from_db()
+        assert deal_with_lead.campaign.market_persona == {"facts": reconciled}
+
+    def test_blank_messages_treated_as_empty(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        msgs = [self._msg("   ", is_outgoing=True), self._msg("", is_outgoing=False)]
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_extract.assert_not_called()
+
+    def test_skips_when_persona_is_mature(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        deal_with_lead.campaign.market_persona = {
+            "facts": [f"market fact {i}" for i in range(15)],
+        }
+        deal_with_lead.campaign.save(update_fields=["market_persona"])
+
+        msgs = [self._msg("New market insight.", is_outgoing=False)]
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_extract.assert_not_called()
+
+    def test_still_extracts_when_below_threshold(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona
+
+        deal_with_lead.campaign.market_persona = {
+            "facts": [f"market fact {i}" for i in range(14)],
+        }
+        deal_with_lead.campaign.save(update_fields=["market_persona"])
+
+        msgs = [self._msg("Another market insight.", is_outgoing=False)]
+        with patch("linkedin.db.summaries.extract_market_facts",
+                   return_value=["market fact 14"]) as mock_extract, \
+             patch("linkedin.db.summaries.reconcile_facts",
+                   return_value=[f"market fact {i}" for i in range(15)]):
+            update_market_persona(deal_with_lead, msgs)
+
+        mock_extract.assert_called_once()
+
+
+class TestUpdateMarketPersonaFromProfile:
+    def test_noop_on_empty_text(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona_from_profile
+
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona_from_profile(deal_with_lead, "")
+
+        mock_extract.assert_not_called()
+
+    def test_extracts_market_facts_from_profile_text(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona_from_profile
+
+        profile_text = "vp engineering acme corp series b saas"
+        market_facts = [
+            "VP Engineering at Series B SaaS companies often wear multiple hats.",
+        ]
+
+        with patch("linkedin.db.summaries.extract_market_facts",
+                   return_value=market_facts) as mock_extract, \
+             patch("linkedin.db.summaries.reconcile_facts",
+                   return_value=market_facts) as mock_reconcile:
+            update_market_persona_from_profile(deal_with_lead, profile_text)
+
+        mock_extract.assert_called_once()
+        mock_reconcile.assert_called_once_with([], market_facts)
+        deal_with_lead.campaign.refresh_from_db()
+        assert deal_with_lead.campaign.market_persona == {"facts": market_facts}
+
+    def test_profile_materialization_triggers_market_persona_update(self, db, fake_session, deal_with_lead):
+        from linkedin.db.summaries import materialize_profile_summary_if_missing
+
+        with patch.object(deal_with_lead.lead, "get_profile", return_value=FAKE_PROFILE), \
+             patch("linkedin.db.summaries.extract_facts",
+                   return_value=["Senior Engineer at Acme."]), \
+             patch("linkedin.db.summaries.update_market_persona_from_profile") as mock_market:
+            materialize_profile_summary_if_missing(deal_with_lead, fake_session)
+
+        mock_market.assert_called_once()
+        call_arg = mock_market.call_args[0][1]
+        assert "acme" in call_arg.lower()
+
+    def test_llm_returns_no_facts_is_noop(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona_from_profile
+
+        with patch("linkedin.db.summaries.extract_market_facts", return_value=[]), \
+             patch("linkedin.db.summaries.reconcile_facts") as mock_reconcile:
+            update_market_persona_from_profile(deal_with_lead, "some text")
+
+        mock_reconcile.assert_not_called()
+        deal_with_lead.campaign.refresh_from_db()
+        assert deal_with_lead.campaign.market_persona is None
+
+    def test_skips_when_persona_is_mature(self, db, deal_with_lead):
+        from linkedin.db.summaries import update_market_persona_from_profile
+
+        deal_with_lead.campaign.market_persona = {
+            "facts": [f"market fact {i}" for i in range(15)],
+        }
+        deal_with_lead.campaign.save(update_fields=["market_persona"])
+
+        with patch("linkedin.db.summaries.extract_market_facts") as mock_extract:
+            update_market_persona_from_profile(deal_with_lead, "some profile text")
+
+        mock_extract.assert_not_called()
+
+
+class TestDealBriefing:
+    def test_empty_when_no_intelligence(self, db, deal_with_lead):
+        assert deal_with_lead.briefing() == "(no intelligence gathered yet)"
+
+    def test_renders_all_three_sections(self, db, deal_with_lead):
+        deal_with_lead.profile_summary = {"facts": [
+            "Senior engineer at Acme Corp.",
+            "Based in Berlin.",
+        ]}
+        deal_with_lead.chat_summary = {"facts": [
+            "Lead is curious about pricing.",
+        ]}
+        deal_with_lead.campaign.market_persona = {"facts": [
+            "Mid-market teams struggle with Datadog costs.",
+        ]}
+        deal_with_lead.save()
+        deal_with_lead.campaign.save(update_fields=["market_persona"])
+
+        briefing = deal_with_lead.briefing()
+
+        assert "## About the lead" in briefing
+        assert "Senior engineer at Acme Corp." in briefing
+        assert "## From the conversation" in briefing
+        assert "Lead is curious about pricing." in briefing
+        assert "## Market context" in briefing
+        assert "Mid-market teams struggle with Datadog costs." in briefing
+
+    def test_skips_empty_sections(self, db, deal_with_lead):
+        deal_with_lead.profile_summary = {"facts": ["Works at Acme."]}
+        deal_with_lead.save()
+
+        briefing = deal_with_lead.briefing()
+
+        assert "## About the lead" in briefing
+        assert "From the conversation" not in briefing
+        assert "Market context" not in briefing

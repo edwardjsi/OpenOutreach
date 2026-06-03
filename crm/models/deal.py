@@ -50,3 +50,35 @@ class Deal(models.Model):
     def __str__(self):
         lead_str = str(self.lead) if self.lead_id else "?"
         return f"{lead_str} [{self.state}]"
+
+    def briefing(self) -> str:
+        """Human-readable call briefing from all accumulated intelligence.
+
+        Combines profile_summary, chat_summary, and campaign.market_persona
+        into a compact, scannable text block. Designed for a quick read
+        before a phone call or WhatsApp message.
+        """
+        sections: list[str] = []
+
+        # ── Lead profile ──
+        profile_facts = (self.profile_summary or {}).get("facts", [])
+        if profile_facts:
+            lines = ["## About the lead"]
+            lines.extend(f"  • {f}" for f in profile_facts)
+            sections.append("\n".join(lines))
+
+        # ── Conversation so far ──
+        chat_facts = (self.chat_summary or {}).get("facts", [])
+        if chat_facts:
+            lines = ["## From the conversation"]
+            lines.extend(f"  • {f}" for f in chat_facts)
+            sections.append("\n".join(lines))
+
+        # ── Market context ──
+        market_facts = (self.campaign.market_persona or {}).get("facts", []) if self.campaign_id else []
+        if market_facts:
+            lines = ["## Market context"]
+            lines.extend(f"  • {f}" for f in market_facts)
+            sections.append("\n".join(lines))
+
+        return "\n\n".join(sections) if sections else "(no intelligence gathered yet)"

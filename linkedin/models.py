@@ -17,6 +17,7 @@ _RATE_LIMIT_FIELDS = {
     "connect": ("connect_daily_limit", "connect_weekly_limit"),
     "follow_up": ("follow_up_daily_limit", None),
     "engage": ("engage_daily_limit", None),
+    "like": ("like_daily_limit", None),
 }
 
 
@@ -94,6 +95,7 @@ class Campaign(models.Model):
     action_fraction = models.FloatField(default=0.2)
     seed_public_ids = models.JSONField(default=list, blank=True)
     model_blob = models.BinaryField(null=True, blank=True)
+    market_persona = models.JSONField(null=True, blank=True, default=None)
 
     def __str__(self):
         return self.name
@@ -122,6 +124,7 @@ class LinkedInProfile(models.Model):
     connect_daily_limit = models.PositiveIntegerField(default=20)
     connect_weekly_limit = models.PositiveIntegerField(default=100)
     follow_up_daily_limit = models.PositiveIntegerField(default=25)
+    like_daily_limit = models.PositiveIntegerField(default=5)
     legal_accepted = models.BooleanField(default=False)
     cookie_data = models.JSONField(null=True, blank=True)
     newsletter_processed = models.BooleanField(default=False)
@@ -212,6 +215,7 @@ class ActionLog(models.Model):
         CONNECT = "connect", "Connect"
         FOLLOW_UP = "follow_up", "Follow Up"
         ENGAGE = "engage", "Feed Engagement"
+        LIKE = "like", "Like Profile"
 
     linkedin_profile = models.ForeignKey(
         LinkedInProfile,
@@ -256,6 +260,7 @@ class Task(models.Model):
         CONNECT = "connect"
         CHECK_PENDING = "check_pending"
         FOLLOW_UP = "follow_up"
+        LIKE = "like"
 
     class Status(models.TextChoices):
         PENDING = "pending"

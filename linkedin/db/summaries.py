@@ -98,6 +98,166 @@ def extract_facts(text: str, *, context: str = "") -> list[str]:
     return list(result.facts)
 
 
+# ── Market persona ──
+#
+# Extracts generalizations about the target market — patterns, pain points,
+# tool stacks, shared frustrations, buying behaviors — that apply across
+# multiple leads in the same role/industry. These accumulate in
+# ``Campaign.market_persona`` and feed the follow-up agent so every lead
+# feels known from the first message.
+
+_MARKET_FACT_EXTRACTION_PROMPT = """\
+You are a market-intelligence assistant. Your job is to read conversation
+transcripts and LinkedIn profile text and extract generalizations about the
+target market — patterns, pain points, workflows, tools, common frustrations,
+buying behaviors — that apply to multiple people in this role or industry.
+
+Rules:
+- Each fact must be a generalization about the market/role/industry, NOT about
+  the specific individual you're reading about.
+  WRONG: "Sarah uses Datadog and finds it expensive"
+  RIGHT: "VP Engineering at Series B SaaS often use Datadog but find the
+  per-host pricing model unsustainable as they scale"
+- Strip ALL personally identifiable information. Never include names, company
+  names, locations, or specific identifying details.
+- Prefer concrete, specific generalizations over vague ones.
+  WRONG: "Engineers care about observability"
+  RIGHT: "Engineers at mid-market SaaS companies struggle with alert fatigue
+  from juggling 3+ monitoring tools that don't integrate well"
+- Look for: recurring pain points, common tool stacks, shared frustrations,
+  budget constraints, decision-making patterns, buying triggers,
+  industry jargon and how people talk about their problems.
+- If the input is a profile (not a conversation), extract what the person's
+  role, career arc, and company context imply about their market segment.
+- If the input is a conversation, extract what the lead's stated problems,
+  questions, and reactions reveal about broader market patterns.
+- Do not duplicate existing facts. Return genuinely new insights.
+- Keep each fact under ~30 words.
+- Return between 0 and 20 facts. Empty list is acceptable when there is
+  nothing generalizable to extract.
+- The input may contain messages from both sides, tagged [Me] and [Lead].
+  Extract generalizations from the lead's side only. [Me] messages are
+  context for understanding what the lead is responding to.
+
+Output a JSON object matching the schema you have been given.
+"""
+
+
+def extract_market_facts(text: str, *, context: str = "") -> list[str]:
+    """Extract market-level generalizations from ``text``.
+
+    Same shape as ``extract_facts`` but the prompt instructs the LLM to
+    generalize beyond the individual — stripping PII and extracting
+    patterns that hold across the market segment.
+
+    ``context`` biases what counts as a relevant market fact (campaign
+    objective, product docs). Returns ``[]`` for empty inputs.
+    """
+    if not text or not text.strip():
+        return []
+
+    from pydantic_ai import Agent
+
+    from linkedin.llm import get_llm_model, run_agent_sync
+
+    system = _MARKET_FACT_EXTRACTION_PROMPT
+    if context:
+        system = f"{system}\n\nContext for relevance:\n{context}"
+
+    agent = Agent(
+        get_llm_model(),
+        system_prompt=system,
+        output_type=FactList,
+        model_settings={"temperature": 0.0, "timeout": 60},
+    )
+    result: FactList = run_agent_sync(agent.run(text)).output
+    return list(result.facts)
+
+
+# Once a campaign persona reaches this many facts, stop extracting —
+# the persona is mature and further LLM calls have diminishing returns.
+_MARKET_PERSONA_MAX_FACTS = 15
+
+
+def update_market_persona(deal, new_messages) -> None:
+    """Fold newly-synced messages into ``deal.campaign.market_persona``.
+
+    Extracts market-level generalizations from the new messages, then
+    reconciles them into the campaign's accumulated market persona using
+    the same mem0 reconciliation as ``update_chat_summary``.
+
+    No-op when the persona is already mature (≥``_MARKET_PERSONA_MAX_FACTS``
+    facts), when there are no incoming (lead) messages, and when the LLM
+    returns no new market facts.
+    """
+    new_messages = list(new_messages)
+    if not new_messages:
+        return
+
+    campaign = deal.campaign
+    existing = (campaign.market_persona or {}).get("facts", [])
+    if len(existing) >= _MARKET_PERSONA_MAX_FACTS:
+        return
+
+    formatted = _format_messages_for_extraction(new_messages)
+    if not formatted:
+        return
+    context_parts = []
+    if getattr(campaign, "campaign_objective", None):
+        context_parts.append(f"Campaign objective: {campaign.campaign_objective}")
+    if getattr(campaign, "product_docs", None):
+        context_parts.append(f"Product context: {campaign.product_docs}")
+    context = "\n\n".join(context_parts)
+
+    new_facts = extract_market_facts(formatted, context=context)
+    if not new_facts:
+        return
+
+    reconciled = reconcile_facts(existing, new_facts)
+    campaign.market_persona = {"facts": reconciled}
+    campaign.save(update_fields=["market_persona"])
+    logger.info(
+        "market_persona updated for campaign=%s (+%d new facts → %d total)",
+        campaign.name, len(new_facts), len(reconciled),
+    )
+
+
+def update_market_persona_from_profile(deal, profile_text: str) -> None:
+    """Extract market facts from a lead's LinkedIn profile text.
+
+    Called once per (lead, campaign) lifetime alongside
+    ``materialize_profile_summary_if_missing``. Extracts what the lead's
+    role, company, and career arc imply about the broader market segment.
+
+    No-op when the persona is already mature.
+    """
+    if not profile_text or not profile_text.strip():
+        return
+
+    campaign = deal.campaign
+    existing = (campaign.market_persona or {}).get("facts", [])
+    if len(existing) >= _MARKET_PERSONA_MAX_FACTS:
+        return
+    context_parts = []
+    if getattr(campaign, "campaign_objective", None):
+        context_parts.append(f"Campaign objective: {campaign.campaign_objective}")
+    if getattr(campaign, "product_docs", None):
+        context_parts.append(f"Product context: {campaign.product_docs}")
+    context = "\n\n".join(context_parts)
+
+    new_facts = extract_market_facts(profile_text, context=context)
+    if not new_facts:
+        return
+
+    reconciled = reconcile_facts(existing, new_facts)
+    campaign.market_persona = {"facts": reconciled}
+    campaign.save(update_fields=["market_persona"])
+    logger.info(
+        "market_persona updated from profile for campaign=%s lead=%s (+%d facts → %d total)",
+        campaign.name, deal.lead.public_identifier, len(new_facts), len(reconciled),
+    )
+
+
 # ── Profile summary ──
 
 def materialize_profile_summary_if_missing(deal, session) -> None:
@@ -137,6 +297,8 @@ def materialize_profile_summary_if_missing(deal, session) -> None:
         "profile_summary built for deal=%s lead=%s (%d facts)",
         deal.pk, lead.public_identifier, len(facts),
     )
+
+    update_market_persona_from_profile(deal, profile_text)
 
 
 # ── Chat summary ──
