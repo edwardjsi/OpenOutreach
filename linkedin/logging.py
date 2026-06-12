@@ -49,11 +49,11 @@ class ColoredFormatter(logging.Formatter):
     """Compact colored formatter: ``[LVL] message``."""
 
     def format(self, record: logging.LogRecord) -> str:
-        msg = super().format(record)
+        ts = self.formatTime(record, self.datefmt)
         color, attrs = _LEVEL_COLORS.get(record.levelno, (None, []))
         label = _LEVEL_LABELS.get(record.levelno, "???")
         prefix = colored(f"[{label}]", color, attrs=attrs) if color else f"[{label}]"
-        return f"{prefix} {msg}"
+        return f"{ts}  {prefix} {record.getMessage()}"
 
 
 # ── Public API ──────────────────────────────────────────────────────
@@ -70,7 +70,9 @@ def configure_logging(level: int = logging.DEBUG):
     root.handlers.clear()
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(ColoredFormatter("%(message)s"))
+    fmt = ColoredFormatter()
+    fmt.datefmt = "%Y-%m-%d %H:%M:%S"
+    handler.setFormatter(fmt)
     handler.setLevel(level)
 
     root.addHandler(handler)

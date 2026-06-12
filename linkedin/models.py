@@ -49,11 +49,11 @@ class SiteConfig(models.Model):
         help_text="Pause the daemon outside the active window.",
     )
     active_start_hour = models.PositiveSmallIntegerField(
-        default=9,
+        default=6,
         help_text="Inclusive, 0-23 local time.",
     )
     active_end_hour = models.PositiveSmallIntegerField(
-        default=19,
+        default=23,
         help_text="Exclusive, 0-23 local time.",
     )
     active_timezone = models.CharField(
@@ -275,6 +275,7 @@ class Task(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    failure_count = models.PositiveIntegerField(default=0)
 
     objects = TaskQuerySet.as_manager()
 
@@ -298,5 +299,6 @@ class Task(models.Model):
         self.save(update_fields=["status", "completed_at"])
 
     def mark_failed(self):
+        self.failure_count = self.failure_count + 1
         self.status = self.Status.FAILED
-        self.save(update_fields=["status"])
+        self.save(update_fields=["status", "failure_count"])
