@@ -140,6 +140,8 @@ def start_browser_session(session: "AccountSession"):
             timeout=BROWSER_DEFAULT_TIMEOUT_MS,
             error_message="Saved session invalid",
         )
+        _save_cookies(session)
+        logger.info("Saved session restored — cookies refreshed")
 
     # "domcontentloaded" — "load" waits for every subresource (analytics
     # beacons, lazy media) and on LinkedIn that event may never fire,

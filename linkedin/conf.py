@@ -34,6 +34,18 @@ HUMAN_TYPE_MIN_DELAY_MS = 50
 HUMAN_TYPE_MAX_DELAY_MS = 200
 
 # ----------------------------------------------------------------------
+# Checkpoint challenge (security verification) manual resolution
+# ----------------------------------------------------------------------
+CHECKPOINT_POLL_INTERVAL_S = 5
+CHECKPOINT_HEARTBEAT_INTERVAL_S = 60
+
+# ----------------------------------------------------------------------
+# Telegram Bot API for checkpoint alerts
+# ----------------------------------------------------------------------
+TELEGRAM_API_BASE = "https://api.telegram.org"
+TELEGRAM_TIMEOUT_S = 10
+
+# ----------------------------------------------------------------------
 # Onboarding defaults (shown to user during interactive setup)
 # ----------------------------------------------------------------------
 DEFAULT_CONNECT_DAILY_LIMIT = 20

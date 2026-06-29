@@ -28,6 +28,15 @@ class SiteConfigAdmin(admin.ModelAdmin):
                 "Rest days use 0=Mon … 6=Sun, e.g. [5,6] for weekends."
             ),
         }),
+        ("Telegram Alerts", {
+            "fields": ("telegram_bot_token", "telegram_chat_id"),
+            "description": (
+                "Optional. When both fields are set, the daemon sends a Telegram "
+                "push when LinkedIn blocks on a security checkpoint. "
+                "Create a bot via @BotFather (/newbot), get your chat ID from "
+                "@userinfobot, then test with: python manage.py testtelegram"
+            ),
+        }),
     )
 
     def has_add_permission(self, request):

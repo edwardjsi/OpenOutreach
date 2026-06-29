@@ -22,3 +22,8 @@ class ReachedConnectionLimit(Exception):
     """ Weekly connection limit reached. """
     pass
 
+
+class CheckpointChallengeError(Exception):
+    """LinkedIn served a security checkpoint challenge that could not be
+    resolved automatically. The browser is still on the checkpoint page."""
+    pass

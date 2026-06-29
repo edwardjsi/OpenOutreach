@@ -67,6 +67,20 @@ class SiteConfig(models.Model):
         help_text="List of weekday ints (0=Mon … 6=Sun) to pause on.",
     )
 
+    # ── Telegram alerts (checkpoint manual-resolution notification)
+    telegram_bot_token = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Telegram bot token from @BotFather /newbot.",
+    )
+    telegram_chat_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Your numeric chat ID (from @userinfobot) or @channelusername.",
+    )
+
     class Meta:
         app_label = "linkedin"
         verbose_name = "Site Configuration"

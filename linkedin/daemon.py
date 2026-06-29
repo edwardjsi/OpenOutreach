@@ -15,7 +15,7 @@ from termcolor import colored
 
 from linkedin.conf import CAMPAIGN_CONFIG
 from linkedin.diagnostics import failure_diagnostics
-from linkedin.exceptions import AuthenticationError
+from linkedin.exceptions import AuthenticationError, CheckpointChallengeError
 from linkedin.ml.qualifier import BayesianQualifier, KitQualifier
 from linkedin.models import Task
 from linkedin.tasks.check_pending import handle_check_pending
@@ -357,6 +357,17 @@ def run_daemon(session):
             # ensure_browser() launches a fresh browser.
             logger.warning(
                 "Browser crash during %s — closing session to force re-launch", task,
+            )
+            session.close()
+            task.mark_failed()
+            continue
+        except CheckpointChallengeError:
+            # Checkpoint was detected but not resolved (e.g. user closed VNC
+            # without solving, or the page changed back to checkpoint after
+            # resolution attempt). Close the browser so the next ensure_browser()
+            # does a full restart instead of a tight 401→reauth cycle.
+            logger.warning(
+                "Checkpoint not resolved for %s — closing browser to force clean restart", task,
             )
             session.close()
             task.mark_failed()

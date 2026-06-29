@@ -88,6 +88,33 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) make up
 
 The VNC server is exposed on port 5900. Use `make up-view` to auto-open it, or connect manually to `localhost:5900` with any VNC client.
 
+### LinkedIn Security Checkpoints (Manual Resolution via VNC)
+
+LinkedIn may serve a **security checkpoint challenge** (`/checkpoint/challenge/...`) when it detects browser automation. When this happens, the daemon **pauses automatically** — it stops all LinkedIn requests and waits for you to solve the challenge manually via VNC.
+
+**What happens:**
+1. The daemon detects the checkpoint URL and blocks (no retry loop, no re-hammering).
+2. A terminal bell (`\a`) + colored banner is logged.
+3. If Telegram alerts are configured (see below), a push notification is sent to your phone.
+4. Open VNC (`http://localhost:6080/vnc.html` or `localhost:5900`), solve the challenge.
+5. The daemon **resumes automatically** once the browser reaches `/feed`.
+
+#### Telegram Alert Setup (Optional but Recommended)
+
+Get a Telegram push when the daemon blocks on a checkpoint:
+
+1. **Create a bot:** Open Telegram → search **@BotFather** → send `/newbot` → choose a name + username → copy the **bot token**.
+2. **Get your chat ID:** Search **@userinfobot** → send any message → copy the numeric **Id**.
+3. **Configure in Admin:** Open `http://localhost:8000/admin/linkedin/siteconfig/1/` → find **"Telegram Alerts"** section → paste bot token + chat ID → Save.
+4. **Test:**
+   ```bash
+   make shell
+   python manage.py testtelegram
+     ```
+   You should receive: "✅ OpenOutreach Telegram alerts are configured correctly."
+
+If Telegram isn't configured, the terminal bell + log banner still fire as a zero-config fallback (visible via `make logs`).
+
 ### Volume Mounts
 
 The pre-built `docker run` command uses a named Docker volume (`openoutreach_db`) mounted at `/app/data` for data persistence (database, config). The compose setup (`local.yml`) mounts the entire repo `.:/app` for live code editing during development.
