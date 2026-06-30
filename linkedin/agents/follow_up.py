@@ -191,8 +191,9 @@ def run_follow_up_agent(session, deal) -> FollowUpDecision:
         get_llm_model(),
         output_type=FollowUpDecision,
         model_settings={"temperature": 0.7, "timeout": 60},
+        system_prompt=system_prompt,
     )
-    decision = run_agent_sync(agent.run(system_prompt)).output
+    decision = run_agent_sync(agent.run("execute")).output
     if decision is None:
         raise RuntimeError(f"LLM returned unparseable response for follow-up of {public_id}")
 

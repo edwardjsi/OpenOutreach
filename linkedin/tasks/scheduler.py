@@ -130,22 +130,23 @@ def enqueue_follow_up(
 
     if failed is not None and failed.failure_count > 0:
         # exponential backoff: 10s * 2^(failure_count-1), capped at MAX
-        backoff_seconds = min(
+        delay_seconds = min(
             delay_seconds * (2 ** (failed.failure_count - 1)),
             MAX_BACKOFF_HOURS * 3600,
         )
-        logger.info(
-            "follow_up for %s has failed %d time(s) — backing off %.0f s",
-            public_id, failed.failure_count, backoff_seconds,
-        )
-        delay_seconds = backoff_seconds
 
-    _insert_task(
+    inserted = _insert_task(
         task_type=Task.TaskType.FOLLOW_UP,
         payload={"campaign_id": campaign_id, "public_id": public_id},
         delay_seconds=delay_seconds,
         dedup_keys=["campaign_id", "public_id"],
     )
+
+    if inserted and failed is not None and failed.failure_count > 0:
+        logger.info(
+            "follow_up for %s has failed %d time(s) — backing off %.0f s",
+            public_id, failed.failure_count, delay_seconds,
+        )
 
 
 # ── Delay helpers ─────────────────────────────────────────────────────

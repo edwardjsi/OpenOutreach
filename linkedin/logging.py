@@ -53,7 +53,10 @@ class ColoredFormatter(logging.Formatter):
         color, attrs = _LEVEL_COLORS.get(record.levelno, (None, []))
         label = _LEVEL_LABELS.get(record.levelno, "???")
         prefix = colored(f"[{label}]", color, attrs=attrs) if color else f"[{label}]"
-        return f"{ts}  {prefix} {record.getMessage()}"
+        msg = f"{ts}  {prefix} {record.getMessage()}"
+        if record.exc_info:
+            msg += "\n" + self.formatException(record.exc_info)
+        return msg
 
 
 # ── Public API ──────────────────────────────────────────────────────

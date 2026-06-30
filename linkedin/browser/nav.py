@@ -51,6 +51,13 @@ def goto_page(session,
                     f"Checkpoint not resolved → still on {current}"
                 )
             # Resolved — fall through; expected pattern may now match.
+            if _is_still_blocked(current):
+                logger.warning(
+                    "Post-checkpoint page is still blocked (%s) — "
+                    "re-authenticating before proceeding.", current,
+                )
+                session.reauthenticate()
+                current = unquote(session.page.url)
         if expected_url_pattern not in current:
             raise RuntimeError(f"{error_message} → expected '{expected_url_pattern}' | got '{current}'")
 
@@ -80,20 +87,73 @@ def await_checkpoint_resolution(session, page) -> None:
     next_heartbeat = time.monotonic() + CHECKPOINT_HEARTBEAT_INTERVAL_S
     while True:
         current = unquote(page.url)
-        if "/checkpoint/challenge/" not in current:
+
+        # ── Checkpoint resolved? ──────────────────────────────────────
+        # Must leave /checkpoint/challenge/ entirely for the checkpoint to
+        # be considered resolved. If the URL is /login or /flagship-web we
+        # are still blocked — keep looping.
+        is_resolved = "/checkpoint/challenge/" not in current
+        if is_resolved and not _is_still_blocked(current):
             logger.info("Checkpoint resolved — URL is now %s. Resuming daemon.", current)
             return
+
+        # Also check via JavaScript to catch VNC-initiated navigation
+        try:
+            js_url = page.evaluate("window.location.href")
+            if js_url and "/checkpoint/challenge/" not in unquote(js_url):
+                is_js_resolved = True
+                if is_js_resolved and not _is_still_blocked(js_url):
+                    logger.info(
+                        "Checkpoint resolved (via JS) — URL is now %s. Resuming daemon.", unquote(js_url),
+                    )
+                    return
+        except Exception:
+            pass  # page might be closed or stale
 
         now = time.monotonic()
         if now >= next_heartbeat:
             logger.info(
                 "alive — waiting for LinkedIn checkpoint resolution "
-                "(open VNC and solve the challenge to resume)"
+                "(open VNC and solve the challenge to resume) "
+                "current URL: %s",
+                current,
             )
             next_heartbeat = now + CHECKPOINT_HEARTBEAT_INTERVAL_S
 
         time.sleep(CHECKPOINT_POLL_INTERVAL_S)
 
+
+
+_RESOLVED_PATTERNS = ("/feed", "/in/", "/mynetwork/", "/jobs/", "/messaging/")
+_BLOCKED_PATTERNS = (
+    "/login",
+    "/checkpoint/",
+    "/auth/",
+    "flagship-web/login",
+    "?vcd=",
+)
+
+
+def _is_still_blocked(url: str) -> bool:
+    """Check if the URL is still on a blocked page after checkpoint resolution.
+
+    After the checkpoint challenge page is resolved (URL leaves ``/checkpoint/challenge/``),
+    the browser may land on a LinkedIn login page if the verification code was wrong,
+    or on a ``flagship-web`` page if the session was consumed. In either case, the
+    daemon should **not** unblock — the user needs to continue on VNC.
+
+    Returns ``True`` if any blocked pattern is in the URL **and** no resolved pattern is
+    present. ``False`` means the checkpoint is fully resolved and the daemon can resume.
+    """
+    url_lower = url.lower()
+    for pat in _BLOCKED_PATTERNS:
+        if pat in url_lower:
+            # Only "still blocked" if NO resolved pattern is present
+            for rpat in _RESOLVED_PATTERNS:
+                if rpat in url_lower:
+                    return False
+            return True
+    return False
 
 
 def extract_in_urls(page):

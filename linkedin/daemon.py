@@ -12,7 +12,9 @@ from playwright.sync_api import Error as PlaywrightError
 from pydantic_ai.exceptions import ModelHTTPError
 
 from termcolor import colored
+from urllib.parse import unquote
 
+from linkedin.browser.nav import _is_still_blocked
 from linkedin.conf import CAMPAIGN_CONFIG
 from linkedin.diagnostics import failure_diagnostics
 from linkedin.exceptions import AuthenticationError, CheckpointChallengeError
@@ -337,6 +339,20 @@ def run_daemon(session):
                 handler(task, session, qualifiers)
         except AuthenticationError:
             logger.warning("Session expired during %s — re-authenticating", task)
+            # ── Guard: if the page is still on a blocked page (flagship-web/login),
+            # re-authenticating will just loop. Check the current URL.
+            try:
+                page_url = session.page.url if session.page else ""
+                if _is_still_blocked(unquote(page_url)):
+                    logger.warning(
+                        "Re-authentication skipped — page is still on a blocked page "
+                        "(%s). The user must resolve the challenge manually. "
+                        "Marking task FAILED and continuing.", page_url,
+                    )
+                    task.mark_failed()
+                    continue
+            except Exception:
+                pass
             try:
                 session.reauthenticate()
             except Exception:

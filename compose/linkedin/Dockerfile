@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 RUN pip install uv
 
 COPY ./requirements /requirements
+COPY ./vendor /app/vendor
 ARG BUILD_ENV=production
 RUN uv pip install --system -r /requirements/${BUILD_ENV}.txt
 
