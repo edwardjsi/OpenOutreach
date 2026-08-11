@@ -162,8 +162,13 @@ def extract_in_urls(page):
 
     seen = set()
     urls = []
-    for link in page.locator('a[href*="/in/"]').all():
-        href = link.get_attribute("href")
+    # Single atomic snapshot. Per-element get_attribute() re-resolves the
+    # locator for every link and can hit the 30s default timeout per element
+    # on heavy pages with detaching nodes — freezing a task for minutes.
+    hrefs = page.locator('a[href*="/in/"]').evaluate_all(
+        "els => els.map(e => e.getAttribute('href'))"
+    )
+    for href in hrefs:
         if href and "/in/" in href:
             full_url = urljoin(page.url, href.strip())
             clean = urlparse(full_url)._replace(query="", fragment="").geturl()

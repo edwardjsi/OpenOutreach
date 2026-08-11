@@ -46,7 +46,7 @@ Single write path: `apply(config)` — idempotent, creates missing Campaign, Lin
 
 ## Task Queue
 
-Persistent queue backed by `Task` model. Worker loop in `daemon.py`: `seconds_until_active()` guard pauses outside active hours/rest days → pop oldest due task → set campaign on session → RUNNING → dispatch via `_HANDLERS` dict → COMPLETED/FAILED. Failures captured by `failure_diagnostics()` context manager.
+Persistent queue backed by `Task` model. Worker loop in `daemon.py`: `work_shift_active()` guard idles the daemon once its shift (N hours from start, per SiteConfig) elapses → pop oldest due task → set campaign on session → RUNNING → dispatch via `_HANDLERS` dict → COMPLETED/FAILED. Failures captured by `failure_diagnostics()` context manager.
 
 Task creation is centralized in `linkedin/tasks/scheduler.py`. No other module inserts Task rows. The module exposes three layers: (1) low-level `enqueue_connect`/`enqueue_check_pending`/`enqueue_follow_up` with per-call dedup against existing PENDING rows, (2) a state-transition hook `on_deal_state_entered(deal)` fired by `set_profile_state()` that picks the right task for the new state, and (3) `reconcile(session)` which walks CRM state and recreates missing tasks.
 
@@ -90,8 +90,8 @@ Three apps in `INSTALLED_APPS`:
 
 ## Key Modules
 
-- **`daemon.py`** — Worker loop with active-hours guard (`ENABLE_ACTIVE_HOURS` flag, `seconds_until_active()`), `_build_qualifiers()`, freemium import, `_CloudPromoRotator`. Calls `scheduler.reconcile()` when the queue has no ready task.
-- **`diagnostics.py`** — `failure_diagnostics()` context manager, `capture_failure()` saves page HTML/screenshot/traceback to `/tmp/openoutreach-diagnostics/`.
+- **`daemon.py`** — Worker loop with work-shift guard (`enable_active_hours` + `work_shift_hours` via SiteConfig, `work_shift_active()`), `_build_qualifiers()`, freemium import, `_CloudPromoRotator`. Calls `scheduler.reconcile()` when the queue has no ready task.
+- **`diagnostics.py`** — `failure_diagnostics()` context manager; `capture_failure()` saves page HTML/screenshot/traceback to `/tmp/openoutreach-diagnostics/`. Capture is bounded (`DIAGNOSTICS_CAPTURE_TIMEOUT_S`): it runs inline on the main thread (the Playwright sync API cannot be driven from another thread) with `page.screenshot(timeout=…)` as a liveness gate — a dead or frozen renderer raises/times out on the screenshot, so the untimed `page.content()` is only attempted on a responsive renderer. Capture is skipped entirely when the error indicates the target crashed or closed.
 - **`tasks/scheduler.py`** — Single owner of Task row creation. Low-level `enqueue_*`, state-transition hook `on_deal_state_entered`, and `reconcile()`.
 - **`tasks/connect.py`** — `handle_connect`, `ConnectStrategy`.
 - **`tasks/check_pending.py`** — `handle_check_pending`, exponential backoff.
@@ -108,8 +108,8 @@ Three apps in `INSTALLED_APPS`:
 - **`ml/hub.py`** — HuggingFace kit loader (`fetch_kit()`).
 - **`browser/session.py`** — `AccountSession`: linkedin_profile, page, context, browser, playwright. `campaigns` cached_property (list, via Campaign.users M2M). `ensure_browser()` launches/recovers browser. `self_profile` cached_property (re-discovers via Voyager on first access per session — no DB cache; one extra scrape per daemon restart). Cookie expiry check via `_maybe_refresh_cookies()`. `reauthenticate()` forces fresh login (close browser, clear saved cookies, re-launch).
 - **`browser/registry.py`** — `get_or_create_session()`, `get_first_active_profile()`, `resolve_profile()`, `cli_parser()`/`cli_session()` (shared CLI bootstrap for `__main__` scripts).
-- **`browser/login.py`** — `start_browser_session()` — browser launch + LinkedIn login.
-- **`browser/nav.py`** — Navigation, auto-discovery, `goto_page()`. Checkpoint detection: when the browser lands on `/checkpoint/challenge/`, `await_checkpoint_resolution()` blocks the daemon (polls every `CHECKPOINT_POLL_INTERVAL_S`, heartbeat log every `CHECKPOINT_HEARTBEAT_INTERVAL_S`) and calls `notify_checkpoint()` once. No hard timeout — operator solves via VNC, daemon resumes when URL leaves checkpoint.
+- **`browser/login.py`** — `start_browser_session()` — browser launch + LinkedIn login. Saved-session restore accepts any authenticated page (LinkedIn may deep-link to e.g. a messaging thread on restore); only truly blocked pages (login/checkpoint) trigger a fresh login. `launch_browser()` passes `BROWSER_ARGS` (anti-occlusion/anti-throttling flags + explicit 1920x1080 window) so Chromium keeps rendering on the WM-less Xvfb display instead of stalling until a VNC interaction.
+- **`browser/nav.py`** — Navigation, auto-discovery, `goto_page()`, `extract_in_urls()` (single atomic `evaluate_all` snapshot — no per-element re-resolution). Checkpoint detection: when the browser lands on `/checkpoint/challenge/`, `await_checkpoint_resolution()` blocks the daemon (polls every `CHECKPOINT_POLL_INTERVAL_S`, heartbeat log every `CHECKPOINT_HEARTBEAT_INTERVAL_S`) and calls `notify_checkpoint()` once. No hard timeout — operator solves via VNC, daemon resumes when URL leaves checkpoint.
 - **`db/leads.py`** — Lead CRUD, `get_leads_for_qualification()`, `disqualify_lead()`, `_cache_urn_from_profile()`.
 - **`db/deals.py`** — Deal/state ops, `set_profile_state()`, `increment_connect_attempts()`, `create_freemium_deal()`.
 - **`db/chat.py`** — `sync_conversation()`, `_sync_from_api()`, folds newly-synced messages into `Deal.chat_summary` via `update_chat_summary`.
@@ -139,8 +139,8 @@ Three apps in `INSTALLED_APPS`:
 
 ## Configuration
 
-- **`SiteConfig`** (DB singleton) — `llm_provider` (required, defaults to `openai`; choices: `openai`/`anthropic`/`google`/`groq`/`mistral`/`cohere`/`openai_compatible`), `llm_api_key` (required), `ai_model` (required), `llm_api_base` (required only for `openai_compatible`). `telegram_bot_token` + `telegram_chat_id` (optional — Telegram push when daemon blocks on a LinkedIn checkpoint). `enable_active_hours`/`active_start_hour`/`active_end_hour`/`active_timezone`/`rest_days` (schedule). Editable via Django Admin.
-- **`conf.py` schedule** — `ENABLE_ACTIVE_HOURS` (`True`), `ACTIVE_START_HOUR` (9), `ACTIVE_END_HOUR` (19), `ACTIVE_TIMEZONE` (system-local IANA name, falls back to "UTC"), `REST_DAYS` ((5, 6) = Sat+Sun). Daemon sleeps outside this window.
+- **`SiteConfig`** (DB singleton) — `llm_provider` (required, defaults to `openai`; choices: `openai`/`anthropic`/`google`/`groq`/`mistral`/`cohere`/`openai_compatible`), `llm_api_key` (required), `ai_model` (required), `llm_api_base` (required only for `openai_compatible`). `telegram_bot_token` + `telegram_chat_id` (optional — Telegram push when daemon blocks on a LinkedIn checkpoint). `enable_active_hours` + `work_shift_hours` (work-shift schedule). Editable via Django Admin.
+- **Schedule** (via `SiteConfig` model, editable in Django Admin) — `enable_active_hours` (`True`), `work_shift_hours` (2). When enabled, the daemon works for `work_shift_hours` from each start, then idles until restarted; unchecked = 24/7.
 - **`conf.py:CAMPAIGN_CONFIG`** — `min_ready_to_connect_prob` (0.9), `min_positive_pool_prob` (0.20), `connect_delay_seconds` (10), `connect_no_candidate_delay_seconds` (300), `check_pending_recheck_after_hours` (24), `check_pending_jitter_factor` (0.2), `qualification_n_mc_samples` (100), `enrich_min_delay_seconds` (6), `enrich_max_delay_seconds` (10), `enrich_max_per_page` (10), `burst_min_seconds` (2700), `burst_max_seconds` (3900), `break_min_seconds` (600), `break_max_seconds` (1200), `min_action_interval` (120), `embedding_model` ("BAAI/bge-small-en-v1.5").
 - **Prompt templates** (at `linkedin/templates/prompts/`) — `qualify_lead.j2` (temp 0.7), `search_keywords.j2` (temp 0.9), `follow_up_agent.j2`.
 - **`requirements/`** — `base.txt`, `local.txt`, `production.txt`, `crm.txt` (empty — DjangoCRM installed via `--no-deps`).

@@ -15,3 +15,6 @@ __pycache__/
 /media/
 .cache/
 tests/fixtures/pages/**/*.html
+
+# DeepSeek TUI local state
+.deepseek/

@@ -13,6 +13,14 @@ PROMPTS_DIR = Path(__file__).parent / "templates" / "prompts"
 
 DIAGNOSTICS_DIR = Path("/tmp/openoutreach-diagnostics")
 
+# Hard deadline for failure-diagnostics capture. A frozen renderer can make
+# page.content()/screenshot() block forever. The capture runs inline on the
+# main thread — the Playwright sync API cannot be driven from another thread —
+# so the bound comes from screenshot(timeout=...), which Playwright enforces
+# client-side even on a frozen renderer; the untimed content() is only
+# attempted after the screenshot succeeds.
+DIAGNOSTICS_CAPTURE_TIMEOUT_S = 15
+
 FASTEMBED_CACHE_DIR = ROOT_DIR / ".cache" / "fastembed"
 
 FIXTURE_DIR = ROOT_DIR / "tests" / "fixtures"
@@ -32,6 +40,23 @@ BROWSER_LOGIN_TIMEOUT_MS = 40_000
 BROWSER_NAV_TIMEOUT_MS = 10_000
 HUMAN_TYPE_MIN_DELAY_MS = 50
 HUMAN_TYPE_MAX_DELAY_MS = 200
+
+# Chromium runs headed on a bare Xvfb display (no window manager). Without a
+# WM the window is never mapped/focused, Chromium treats it as occluded, and
+# throttles rendering/timers — page work stalls until an X interaction (a VNC
+# click) wakes the compositor. These flags disable that throttling, and the
+# explicit window size keeps the window fully on-screen (not occluded).
+BROWSER_ARGS = [
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    "--window-position=0,0",
+    "--window-size=1920,1080",
+    # Docker's default /dev/shm is 64MB; heavy pages (LinkedIn profiles)
+    # exceed it and Chromium's renderer dies with "Target crashed". Use /tmp
+    # instead of /dev/shm for shared memory.
+    "--disable-dev-shm-usage",
+]
 
 # ----------------------------------------------------------------------
 # Checkpoint challenge (security verification) manual resolution
@@ -72,5 +97,4 @@ CAMPAIGN_CONFIG = {
     "break_min_seconds": 600,    # 10 min
     "break_max_seconds": 1200,   # 20 min
 }
-
 

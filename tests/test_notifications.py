@@ -122,3 +122,57 @@ class TestNotifyCheckpoint:
         assert _EchoHandler.last_request is not None
         assert _EchoHandler.last_request["chat_id"][0] == "987654"
         assert "checkpoint" in _EchoHandler.last_request["text"][0].lower()
+
+
+@pytest.mark.django_db
+class TestSendDailyReport:
+    """send_daily_report must reflect the day's activity and send via Telegram.
+
+    Regression: the conversations/failed counters queried `state="CONNECTED"`
+    / `state="FAILED"` while the DB stores title-case ProfileState values
+    ("Connected"/"Failed"), so both lines always reported zero.
+    """
+
+    def test_counts_use_profile_state_values(self):
+        from linkedin.enums import ProfileState
+        from linkedin.models import ActionLog, Campaign, LinkedInProfile
+        from linkedin.notifications import send_daily_report
+        from tests.factories import DealFactory, LeadFactory, UserFactory
+
+        campaign = Campaign.objects.create(name="Test Campaign")
+        profile = LinkedInProfile.objects.create(
+            user=UserFactory(),
+            linkedin_username="tester@example.com",
+            linkedin_password="secret",
+        )
+
+        # 1 connect action logged today
+        ActionLog.objects.create(
+            action_type=ActionLog.ActionType.CONNECT,
+            campaign=campaign,
+            linkedin_profile=profile,
+        )
+        # 1 Connected deal → new conversation
+        DealFactory(lead=LeadFactory(), campaign=campaign, state=ProfileState.CONNECTED.value)
+        # 1 Failed deal updated today
+        DealFactory(lead=LeadFactory(), campaign=campaign, state=ProfileState.FAILED.value)
+
+        config = SiteConfig.load()
+        config.telegram_bot_token = "123:abc"
+        config.telegram_chat_id = "987654"
+
+        sent = {}
+
+        def _capture(token, chat_id, text):
+            sent["text"] = text
+            return True
+
+        with (
+            patch("linkedin.models.SiteConfig.load", return_value=config),
+            patch("linkedin.notifications._send_telegram", side_effect=_capture),
+        ):
+            send_daily_report(session=None)
+
+        assert "Connects sent: 1" in sent["text"]
+        assert "New conversations: 1" in sent["text"]
+        assert "Failed: 1" in sent["text"]

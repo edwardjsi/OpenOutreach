@@ -4,10 +4,8 @@ from __future__ import annotations
 import logging
 import random
 import time
-from datetime import timedelta
-from zoneinfo import ZoneInfo
+from datetime import date
 
-from django.utils import timezone
 from playwright.sync_api import Error as PlaywrightError
 from pydantic_ai.exceptions import ModelHTTPError
 
@@ -19,7 +17,7 @@ from linkedin.conf import CAMPAIGN_CONFIG
 from linkedin.diagnostics import failure_diagnostics
 from linkedin.exceptions import AuthenticationError, CheckpointChallengeError
 from linkedin.ml.qualifier import BayesianQualifier, KitQualifier
-from linkedin.models import Task
+from linkedin.models import SiteConfig, Task
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
 from linkedin.tasks.follow_up import handle_follow_up
@@ -206,39 +204,23 @@ def _build_qualifiers(campaigns, cfg, kit_model=None):
 
 
 # ------------------------------------------------------------------
-# Active-hours schedule guard
+# Work-shift guard
 # ------------------------------------------------------------------
 
 
-def seconds_until_active() -> float:
-    """Return seconds to wait before the next active window, or 0 if active now.
+def work_shift_active(config, started_at: float) -> bool:
+    """True when the daemon should keep working.
 
-    Reads schedule settings from the ``SiteConfig`` DB singleton so users
-    can override the timezone (and other parameters) via Django Admin.
+    Shift model: when ``enable_active_hours`` is on, the daemon works for
+    ``work_shift_hours`` measured from ``started_at`` (``time.monotonic()``
+    captured when the daemon started), then idles until the daemon is
+    restarted — no fixed wall-clock window, no timezone, no rest days.
+    When the flag is off the daemon runs 24/7.
     """
-    from linkedin.models import SiteConfig
-
-    config = SiteConfig.load()
     if not config.enable_active_hours:
-        return 0.0
-
-    tz = ZoneInfo(config.active_timezone)
-    now = timezone.localtime(timezone=tz)
-    rest_days = config.rest_days or []
-
-    if now.weekday() not in rest_days and config.active_start_hour <= now.hour < config.active_end_hour:
-        return 0.0
-
-    # Find the next active start: try today first, then subsequent days
-    candidate = timezone.make_aware(
-        now.replace(hour=config.active_start_hour, minute=0, second=0, microsecond=0, tzinfo=None),
-        timezone=tz,
-    )
-    if candidate <= now:
-        candidate += timedelta(days=1)
-    while candidate.weekday() in rest_days:
-        candidate += timedelta(days=1)
-    return (candidate - now).total_seconds()
+        return True
+    shift_seconds = float(config.work_shift_hours or 0) * 3600.0
+    return time.monotonic() - started_at < shift_seconds
 
 
 # ------------------------------------------------------------------
@@ -247,22 +229,12 @@ def seconds_until_active() -> float:
 
 
 def run_daemon(session):
-    from linkedin.ml.hub import fetch_kit
-    from linkedin.setup.freemium import import_freemium_campaign
     from linkedin.models import Campaign
 
     cfg = CAMPAIGN_CONFIG
 
-    # Load kit model for freemium campaigns
-    kit = fetch_kit()
-    if kit:
-        freemium_campaign = import_freemium_campaign(kit["config"])
-        if freemium_campaign:
-            prev_campaign = session.campaign
-            session.campaign = freemium_campaign
-            from linkedin.setup.freemium import seed_profiles
-            seed_profiles(session, kit["config"])
-            session.campaign = prev_campaign
+    # Freemium campaign removed — user requested it gone
+    kit = None
 
     qualifiers = _build_qualifiers(
         session.campaigns, cfg, kit_model=kit["model"] if kit else None,
@@ -279,19 +251,36 @@ def run_daemon(session):
         len(campaigns),
     )
 
+    _daily_report_sent_for: date | None = None
+
     cloud_promo = _CloudPromoRotator(interval=60)
     heartbeat = Heartbeat()
     rhythm = _HumanRhythmBreak(heartbeat)
 
     # Single-threaded: one task at a time, no concurrent enqueuing,
     # so sleeping until the next scheduled_at is safe.
+    shift_started = time.monotonic()
     while True:
-        pause = seconds_until_active()
-        if pause > 0:
-            h, m = int(pause // 3600), int(pause % 3600 // 60)
-            logger.info("Outside active hours — sleeping %dh%02dm", h, m)
+        site = SiteConfig.load()
+        if not work_shift_active(site, shift_started):
+            # ── Daily report when the shift ends ──
+            # Fire once per day at the end of the first shift. A daemon
+            # restarted mid-day must not report a zero-activity day (the
+            # bug that produced empty Telegram reports).
+            today = date.today()
+            if _daily_report_sent_for != today:
+                _daily_report_sent_for = today
+                from linkedin.notifications import send_daily_report
+                send_daily_report(session)
+
+            logger.info(
+                colored("Work shift complete", "yellow", attrs=["bold"])
+                + " — worked %dh, idle until the daemon is restarted "
+                  "(restart to run another shift)",
+                site.work_shift_hours,
+            )
             sleep_with_heartbeat(
-                pause, heartbeat, f"outside active hours, {h}h{m:02d}m left",
+                3600, heartbeat, "shift complete — restart the daemon to run again",
             )
             rhythm.reset()
             continue
@@ -366,6 +355,12 @@ def run_daemon(session):
             logger.error(
                 colored("Daemon stopped — LLM API error", "red", attrs=["bold"])
                 + "\n%s\nCheck llm_provider, ai_model, llm_api_key, and llm_api_base in Admin → Site Configuration.", e,
+            )
+            from linkedin.notifications import notify_error
+            notify_error(
+                session,
+                title="LLM API Error — Daemon Stopped",
+                body=f"{e}",
             )
             return
         except PlaywrightError:

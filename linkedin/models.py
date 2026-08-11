@@ -8,8 +8,6 @@ from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
 
-from linkedin.tz_detect import system_timezone
-
 logger = logging.getLogger(__name__)
 
 # action_type → (daily_limit_field, weekly_limit_field)
@@ -42,29 +40,15 @@ class SiteConfig(models.Model):
     ai_model = models.CharField(max_length=200, blank=True, default="")
     llm_api_base = models.CharField(max_length=500, blank=True, default="")
 
-    # ── Active-hours schedule (editable in Admin so Docker users can
-    # ── override the container timezone with their real local zone.)
+    # ── Work-shift schedule (editable in Admin)
     enable_active_hours = models.BooleanField(
         default=True,
-        help_text="Pause the daemon outside the active window.",
+        help_text="Limit the daemon to a work shift per start; uncheck for 24/7.",
     )
-    active_start_hour = models.PositiveSmallIntegerField(
-        default=6,
-        help_text="Inclusive, 0-23 local time.",
-    )
-    active_end_hour = models.PositiveSmallIntegerField(
-        default=23,
-        help_text="Exclusive, 0-23 local time.",
-    )
-    active_timezone = models.CharField(
-        max_length=64,
-        default=system_timezone,
-        help_text="IANA timezone name (e.g. 'America/New_York').",
-    )
-    rest_days = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of weekday ints (0=Mon … 6=Sun) to pause on.",
+    work_shift_hours = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Hours the daemon works from the moment it starts; "
+        "then it idles until the daemon is restarted.",
     )
 
     # ── Telegram alerts (checkpoint manual-resolution notification)

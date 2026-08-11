@@ -16,6 +16,9 @@ setup: install ## install deps + Playwright browsers + migrate + bootstrap CRM
 run: ## run the daemon
 	python manage.py rundaemon
 
+dumpcookies: ## dump your real browser session (saves to DB — daemon never logs in again)
+	.venv/bin/python manage.py dumpcookies --profile 1
+
 test: ## run the test suite
 	.venv/bin/pytest
 

@@ -8,24 +8,21 @@ from linkedin.models import ActionLog, Campaign, LinkedInProfile, SearchKeyword,
 
 @admin.register(SiteConfig)
 class SiteConfigAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "llm_provider", "ai_model", "active_timezone", "enable_active_hours")
+    list_display = ("__str__", "llm_provider", "ai_model", "work_shift_hours", "enable_active_hours")
 
     fieldsets = (
         ("LLM", {
             "fields": ("llm_provider", "llm_api_key", "ai_model", "llm_api_base"),
         }),
-        ("Active Hours", {
+        ("Work Shift", {
             "fields": (
                 "enable_active_hours",
-                "active_start_hour",
-                "active_end_hour",
-                "active_timezone",
-                "rest_days",
+                "work_shift_hours",
             ),
             "description": (
-                "Daemon pauses outside this window. Set the timezone to your "
-                "local zone (especially in Docker where the container clock is UTC). "
-                "Rest days use 0=Mon … 6=Sun, e.g. [5,6] for weekends."
+                "When enabled, the daemon works for the configured number of "
+                "hours from the moment it starts, then idles until restarted. "
+                "Each daemon start runs a fresh shift. Uncheck for 24/7."
             ),
         }),
         ("Telegram Alerts", {

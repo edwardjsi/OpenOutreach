@@ -1,13 +1,15 @@
 # linkedin/browser/login.py
 import logging
+from urllib.parse import unquote
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from termcolor import colored
 
-from linkedin.browser.nav import goto_page, human_type, resolve_locator
+from linkedin.browser.nav import _is_still_blocked, goto_page, human_type, resolve_locator
 from linkedin.conf import (
+    BROWSER_ARGS,
     BROWSER_DEFAULT_TIMEOUT_MS,
     BROWSER_LOGIN_TIMEOUT_MS,
     BROWSER_SLOW_MO,
@@ -98,7 +100,9 @@ def playwright_login(session: "AccountSession"):
 def launch_browser(storage_state=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False, slow_mo=BROWSER_SLOW_MO)
+    browser = playwright.chromium.launch(
+        headless=False, slow_mo=BROWSER_SLOW_MO, args=BROWSER_ARGS,
+    )
     context = browser.new_context(storage_state=storage_state)
     context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
@@ -133,15 +137,36 @@ def start_browser_session(session: "AccountSession"):
     else:
         session.page.goto(LINKEDIN_FEED_URL)
         dismiss_comply_gate(session.page)
-        goto_page(
-            session,
-            action=lambda: None,
-            expected_url_pattern="/feed",
-            timeout=BROWSER_DEFAULT_TIMEOUT_MS,
-            error_message="Saved session invalid",
-        )
+        try:
+            goto_page(
+                session,
+                action=lambda: None,
+                expected_url_pattern="/feed",
+                timeout=BROWSER_DEFAULT_TIMEOUT_MS,
+                error_message="Saved session invalid",
+            )
+        except RuntimeError:
+            # LinkedIn may deep-link to e.g. a messaging thread when a saved
+            # session is restored. The strict /feed check would wrongly reject
+            # a perfectly valid session, so accept any authenticated page and
+            # only re-login when the page is truly blocked (login/checkpoint).
+            current = unquote(session.page.url) if session.page else ""
+            if _is_still_blocked(current):
+                logger.warning(
+                    "Saved session invalid — on %s; clearing cookies and re-logging in",
+                    current,
+                )
+                session.linkedin_profile.cookie_data = None
+                session.linkedin_profile.save(update_fields=["cookie_data"])
+                playwright_login(session)
+                logger.info(colored("Re-login successful – session saved", "green", attrs=["bold"]))
+            else:
+                logger.info(
+                    "Saved session restored — landed on %s (deep link); session is valid",
+                    current,
+                )
         _save_cookies(session)
-        logger.info("Saved session restored — cookies refreshed")
+        logger.info("Saved session ready — cookies refreshed")
 
     # "domcontentloaded" — "load" waits for every subresource (analytics
     # beacons, lazy media) and on LinkedIn that event may never fire,

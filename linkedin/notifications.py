@@ -74,6 +74,44 @@ def _telegram_message(session) -> str:
     )
 
 
+def notify_error(
+    session,
+    title: str,
+    body: str,
+) -> None:
+    """Send an alert for a critical daemon error (e.g. LLM API failure).
+
+    Always prints to terminal/stderr. Sends a Telegram push if configured.
+    Never raises.
+    """
+    banner = (
+        f"\n\a"
+        f"╔══════════════════════════════════════════════════════════════╗\n"
+        f"║  🚨  {title:<57}║\n"
+        f"║                                                              ║\n"
+        f"║  {body:<61}║\n"
+        f"╚══════════════════════════════════════════════════════════════╝\n"
+    )
+    print(banner, file=sys.stderr, flush=True)
+    logger.error(banner)
+
+    try:
+        from linkedin.models import SiteConfig
+        config = SiteConfig.load()
+        token = (config.telegram_bot_token or "").strip()
+        chat_id = (config.telegram_chat_id or "").strip()
+        if token and chat_id:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            text = (
+                f"🚨 *{title}*\n\n"
+                f"{body}\n\n"
+                f"Time: {ts}"
+            )
+            _send_telegram(token, chat_id, text)
+    except Exception:
+        logger.warning("Failed to send Telegram error alert", exc_info=True)
+
+
 def notify_checkpoint(session) -> None:
     """Alert the operator that the daemon is blocked on a LinkedIn checkpoint.
 
@@ -120,3 +158,78 @@ def notify_checkpoint(session) -> None:
             )
     except Exception:
         logger.warning("Failed to send Telegram checkpoint alert", exc_info=True)
+
+
+def send_daily_report(session) -> None:
+    """Query today's activity and send a Telegram summary.
+
+    Reports connects, follow-ups, new leads, and new conversations.
+    Never raises.
+    """
+    from datetime import date, timedelta
+
+    from django.utils import timezone
+    from termcolor import colored
+
+    from crm.models import Deal
+    from linkedin.enums import ProfileState
+    from linkedin.models import ActionLog
+
+    today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    try:
+        # ── Gather stats ──
+        connects = ActionLog.objects.filter(
+            action_type=ActionLog.ActionType.CONNECT,
+            created_at__gte=today_start,
+        ).count()
+
+        follows = ActionLog.objects.filter(
+            action_type=ActionLog.ActionType.FOLLOW_UP,
+            created_at__gte=today_start,
+        ).count()
+
+        new_deals = Deal.objects.filter(
+            creation_date__gte=today_start,
+        ).count()
+
+        new_conversations = Deal.objects.filter(
+            state=ProfileState.CONNECTED.value,
+            update_date__gte=today_start,
+        ).count()
+
+        failed = Deal.objects.filter(
+            state=ProfileState.FAILED.value,
+            update_date__gte=today_start,
+        ).count()
+
+        # ── Build message ──
+        ts = timezone.now().strftime("%Y-%m-%d %H:%M")
+        lines = [
+            f"📊 *Daily Report — {ts}*",
+            "",
+            f"🔗 Connects sent: {connects}",
+            f"💬 Follow-ups sent: {follows}",
+            f"👤 New leads discovered: {new_deals}",
+            f"✅ New conversations: {new_conversations}",
+            f"❌ Failed: {failed}",
+        ]
+
+        text = "\n".join(lines)
+
+        # ── Terminal log ──
+        logger.info(
+            colored("📊 Daily Report", "cyan", attrs=["bold"])
+            + " — connects=%d follows=%d new=%d conversations=%d failed=%d",
+            connects, follows, new_deals, new_conversations, failed,
+        )
+
+        # ── Telegram ──
+        from linkedin.models import SiteConfig
+        config = SiteConfig.load()
+        token = (config.telegram_bot_token or "").strip()
+        chat_id = (config.telegram_chat_id or "").strip()
+        if token and chat_id:
+            _send_telegram(token, chat_id, text)
+    except Exception:
+        logger.warning("Failed to send daily report", exc_info=True)
