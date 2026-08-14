@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help logs test docker-test stop build up up-view install setup run admin view
+.PHONY: help logs test docker-test stop build up up-view install setup run admin view safety-scan safety-check
 
 help:
 	@perl -nle'print $& if m{^[a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
@@ -20,6 +20,12 @@ dumpcookies: ## dump your real browser session (saves to DB — daemon never log
 	.venv/bin/python manage.py dumpcookies --profile 1
 
 test: ## run the test suite
+	.venv/bin/pytest
+
+safety-scan: ## static account-safety scan only (no tests)
+	.venv/bin/python scripts/account_safety.py --all
+
+safety-check: safety-scan ## account-safety gate: static scan + full test suite (network blocked in tests)
 	.venv/bin/pytest
 
 admin: ## start the Django Admin web server

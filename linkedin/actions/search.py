@@ -1,6 +1,7 @@
 # linkedin/actions/search.py
 
 import logging
+import json
 from typing import Dict, Any
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -65,11 +66,27 @@ def visit_profile(session: "AccountSession", profile: Dict[str, Any]):
     discover_and_enrich(session, urls)
 
 
+def people_search_url(keyword: str, geo_urns: str = "") -> str:
+    """Build the LinkedIn People-search results URL for *keyword*.
+
+    ``geo_urns`` is a comma-separated list of LinkedIn geo URNs (e.g.
+    "103544278,103644278" = India + US). Geographies are scoped via the
+    ``geoUrn`` parameter — a URL-encoded JSON array of URNs, exactly the
+    format LinkedIn's People search expects. Empty = no geography filter.
+    """
+    params: Dict[str, Any] = {"keywords": keyword, "origin": "GLOBAL_SEARCH_HEADER"}
+    urns = [u.strip() for u in geo_urns.split(",") if u.strip()] if geo_urns else []
+    if urns:
+        params["geoUrn"] = json.dumps(urns, separators=(",", ":"))
+    return f"https://www.linkedin.com/search/results/people/?{urlencode(params)}"
+
+
 def _initiate_search(session: "AccountSession", keyword: str):
     """Navigate directly to LinkedIn People search results for *keyword*."""
     page = session.page
-    params = urlencode({"keywords": keyword, "origin": "GLOBAL_SEARCH_HEADER"})
-    url = f"https://www.linkedin.com/search/results/people/?{params}"
+    campaign = getattr(session, "campaign", None)
+    geo_urns = getattr(campaign, "search_geo_urn", "") or ""
+    url = people_search_url(keyword, geo_urns)
 
     goto_page(
         session,

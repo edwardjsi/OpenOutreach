@@ -1,4 +1,5 @@
 # tests/conftest.py
+import socket as _socket
 from unittest.mock import patch
 
 import numpy as np
@@ -66,3 +67,50 @@ def fake_session(db):
     )
 
     return FakeAccountSession(django_user=user, linkedin_profile=linkedin_profile, campaign=campaign)
+
+
+# ── Outbound-network guard ────────────────────────────────────────────────
+# The repo automates a real LinkedIn account. Tests must NEVER reach it (or
+# any external service). This autouse fixture blocks all real sockets so an
+# accidental live call (Playwright, requests, Voyager, LLM API, Telegram)
+# fails fast inside the suite instead of touching the account.
+# Opt out per-test only with @pytest.mark.allow_network — and never for live
+# LinkedIn calls. Belt-and-suspenders with the static scanner at
+# scripts/account_safety.py (`make safety-check`).
+
+
+class _NetworkBlockedError(RuntimeError):
+    pass
+
+
+_ORIG_SOCKET = _socket.socket
+_ORIG_CREATE_CONNECTION = _socket.create_connection
+
+
+def _blocked(family=_socket.AF_INET, *args, **kwargs):
+    # Only real internet sockets (TCP/UDP over IPv4/IPv6) are off-limits.
+    # Local AF_UNIX sockets — asyncio's event-loop self-pipe, Playwright's
+    # driver transport — are machinery, not network, and must keep working.
+    if family in (-1, _socket.AF_INET, _socket.AF_INET6):
+        raise _NetworkBlockedError(
+            "Outbound network blocked in tests — tests must never reach "
+            "LinkedIn or any external service. Use mocks (patch, "
+            "FakeAccountSession). If a loopback socket is genuinely needed, "
+            "mark the test @pytest.mark.allow_network (never for live "
+            "LinkedIn calls)."
+        )
+    return _ORIG_SOCKET(family, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _block_outbound_network(request):
+    if "allow_network" in request.keywords:
+        yield
+        return
+    _socket.socket = _blocked
+    _socket.create_connection = _blocked
+    try:
+        yield
+    finally:
+        _socket.socket = _ORIG_SOCKET
+        _socket.create_connection = _ORIG_CREATE_CONNECTION

@@ -94,6 +94,17 @@ class Campaign(models.Model):
     seed_public_ids = models.JSONField(default=list, blank=True)
     model_blob = models.BinaryField(null=True, blank=True)
     market_persona = models.JSONField(null=True, blank=True, default=None)
+    search_geo_urn = models.CharField(
+        max_length=256,
+        blank=True,
+        default="103544278,103644278,101165590,101174742,106442593,102454443",
+        help_text=(
+            "Comma-separated LinkedIn geo URNs scoping People search to "
+            "those geographies (India=103544278, US=103644278, "
+            "UK=101165590, Canada=101174742, UAE=106442593, "
+            "Singapore=102454443). Empty = no geography filter."
+        ),
+    )
 
     def __str__(self):
         return self.name

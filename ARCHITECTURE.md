@@ -140,6 +140,7 @@ Three apps in `INSTALLED_APPS`:
 ## Configuration
 
 - **`SiteConfig`** (DB singleton) — `llm_provider` (required, defaults to `openai`; choices: `openai`/`anthropic`/`google`/`groq`/`mistral`/`cohere`/`openai_compatible`), `llm_api_key` (required), `ai_model` (required), `llm_api_base` (required only for `openai_compatible`). `telegram_bot_token` + `telegram_chat_id` (optional — Telegram push when daemon blocks on a LinkedIn checkpoint). `enable_active_hours` + `work_shift_hours` (work-shift schedule). Editable via Django Admin.
+- **`Campaign.search_geo_urn`** — comma-separated LinkedIn geo URNs scoping People search (default India + US/UK/Canada/UAE/Singapore; empty = global). `linkedin/actions/search.py:people_search_url` encodes it into the search URL as a JSON array (`geoUrn=["urn1","urn2"]`), so one query spans multiple geographies. Helps reach NRIs (Indians abroad) without reverting to a global pool.
 - **Schedule** (via `SiteConfig` model, editable in Django Admin) — `enable_active_hours` (`True`), `work_shift_hours` (2). When enabled, the daemon works for `work_shift_hours` from each start, then idles until restarted; unchecked = 24/7.
 - **`conf.py:CAMPAIGN_CONFIG`** — `min_ready_to_connect_prob` (0.9), `min_positive_pool_prob` (0.20), `connect_delay_seconds` (10), `connect_no_candidate_delay_seconds` (300), `check_pending_recheck_after_hours` (24), `check_pending_jitter_factor` (0.2), `qualification_n_mc_samples` (100), `enrich_min_delay_seconds` (6), `enrich_max_delay_seconds` (10), `enrich_max_per_page` (10), `burst_min_seconds` (2700), `burst_max_seconds` (3900), `break_min_seconds` (600), `break_max_seconds` (1200), `min_action_interval` (120), `embedding_model` ("BAAI/bge-small-en-v1.5").
 - **Prompt templates** (at `linkedin/templates/prompts/`) — `qualify_lead.j2` (temp 0.7), `search_keywords.j2` (temp 0.9), `follow_up_agent.j2`.
@@ -160,3 +161,9 @@ Base image: `mcr.microsoft.com/playwright/python:v1.55.0-noble`. VNC on port 590
 
 Core: `playwright`, `playwright-stealth`, `Django`, `django-crm-admin`, `pandas`, `pydantic-ai-slim` (with `openai`/`anthropic`/`google`/`groq`/`mistral`/`cohere`/`bedrock` extras), `jinja2`, `pydantic`, `jsonpath-ng`, `tendo`, `termcolor`, `tenacity`
 ML: `scikit-learn`, `numpy`, `fastembed`, `joblib`
+
+## Account Safety
+
+- `scripts/account_safety.py` — stdlib-only static scanner. Flags live-account danger patterns in tests (real `AccountSession`, `PlaywrightLinkedinAPI` outside `patch()`, `sync_playwright`, HTTP clients, `.goto`), network imports outside the sanctioned live layer, and changes to timing/volume constants. Run with `python scripts/account_safety.py --all` or `make safety-scan`.
+- `tests/conftest.py` — autouse `_block_outbound_network` fixture replaces `socket.socket` / `socket.create_connection` with raisers so no test can reach LinkedIn, the LLM API, or Telegram. Escape hatch: `@pytest.mark.allow_network` (registered in `pytest.ini`; never for live LinkedIn calls).
+- `make safety-check` — static scan + full pytest with the guard active. Required gate for every code change (see CLAUDE.md → Account Safety).

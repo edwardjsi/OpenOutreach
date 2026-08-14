@@ -41,6 +41,7 @@ def echo_server():
 
 
 class TestSendTelegram:
+    @pytest.mark.allow_network  # loopback echo server (127.0.0.1) test double — not live LinkedIn
     def test_success_returns_true(self, echo_server):
         """_send_telegram POSTs to /bot<token>/sendMessage and returns True on ok:true."""
         _EchoHandler.last_request = None
@@ -62,6 +63,7 @@ class TestSendTelegram:
             ok = _send_telegram("bad", "bad", "test")
         assert ok is False
 
+    @pytest.mark.allow_network  # loopback echo server (127.0.0.1) test double — not live LinkedIn
     def test_ok_false_returns_false(self, echo_server):
         """_send_telegram returns False when the API responds ok:false."""
         class _FailHandler(BaseHTTPRequestHandler):
@@ -106,6 +108,7 @@ class TestNotifyCheckpoint:
         captured = capsys.readouterr()
         assert "CHECKPOINT" in captured.err
 
+    @pytest.mark.allow_network  # loopback echo server (127.0.0.1) test double — not live LinkedIn
     def test_with_config_sends_telegram(self, echo_server):
         """With Telegram config set, notify_checkpoint calls _send_telegram."""
         _EchoHandler.last_request = None

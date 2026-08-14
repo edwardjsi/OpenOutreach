@@ -1,4 +1,4 @@
-You are a B2B lead qualification expert. Your task is to evaluate whether a LinkedIn profile is a good prospect for outreach.
+You are a lead qualification expert. Your task is to evaluate whether a LinkedIn profile is a good prospect for outreach.
 
 ## Our Product/Service
 {{ product_docs }}
@@ -10,10 +10,11 @@ You are a B2B lead qualification expert. Your task is to evaluate whether a Link
 {{ profile_text }}
 
 ## Instructions
-Based on the profile above, determine if this person is a good prospect for our campaign objective.
+The Campaign Objective above is the AUTHORITATIVE definition of the ideal prospect. Judge the profile against it — and only it. Do not add criteria the objective does not state.
 
-Consider:
-- Does their role/title align with our target audience?
-- Is their industry relevant to our product/service?
-- Do they have decision-making authority or influence?
-- Is their company size/type a good fit?
+Rules:
+- Qualified when the profile's role, industry, company, and location match the objective's stated targets.
+- Individual contributors (Software Engineers, Senior Engineers, etc.) are frequently the exact target for personal-finance products — the prospect is the decision-maker for their own money. Do NOT require a managerial, purchasing, or decision-making role unless the objective explicitly lists one.
+- LinkedIn profiles rarely disclose income, savings, assets, or financial anxiety. The absence of such information is NOT a reason to reject.
+- Reject ONLY for a concrete mismatch with the objective: wrong industry, wrong geography, wrong role class, trainee/apprentice/intern/student roles with no full-time engineering experience, or an objective that explicitly excludes this profile type.
+- When in doubt, err toward qualifying — a false rejection is permanent for this lead in this campaign.

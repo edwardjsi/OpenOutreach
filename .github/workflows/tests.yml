@@ -11,5 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Account safety scan
+        run: python scripts/account_safety.py --all
+
       - name: Run tests
         run: HOST_UID=$(id -u) HOST_GID=$(id -g) make docker-test
