@@ -173,6 +173,7 @@ The system prompt (`follow_up_agent.j2`) follows the Mom Test method:
 - **Language**: infer from profile facts (name origin, location, languages); default to English
 - **Tone**: short, casual, warm — like real LinkedIn DMs (1-3 sentences max)
 - **No boilerplate**: no placeholders, no signatures, no corporate speak
+- **No automation tells**: never reveal that the messages are automated, AI-generated, or tool-driven — the agent writes as a real person
 - **Timing**: agent decides — active reply → 2-8h; async → 24h; no reply → 24-48h; 3+ unanswered → consider `mark_completed`
 - **Booking link**: include naturally when suggesting a call, not as a standalone line
 
