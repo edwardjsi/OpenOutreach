@@ -18,3 +18,5 @@ tests/fixtures/pages/**/*.html
 
 # DeepSeek TUI local state
 .deepseek/
+.journal-staging/
+.mosi_input/
