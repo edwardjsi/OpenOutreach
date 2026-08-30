@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 import random
 import time
-from datetime import date
 
+from django.utils import timezone
 from playwright.sync_api import Error as PlaywrightError
 from pydantic_ai.exceptions import ModelHTTPError
 
@@ -251,8 +251,6 @@ def run_daemon(session):
         len(campaigns),
     )
 
-    _daily_report_sent_for: date | None = None
-
     cloud_promo = _CloudPromoRotator(interval=60)
     heartbeat = Heartbeat()
     rhythm = _HumanRhythmBreak(heartbeat)
@@ -260,18 +258,32 @@ def run_daemon(session):
     # Single-threaded: one task at a time, no concurrent enqueuing,
     # so sleeping until the next scheduled_at is safe.
     shift_started = time.monotonic()
+    shift_started_dt = timezone.now()
+    shift_reported = False
     while True:
         site = SiteConfig.load()
+        if site.daemon_halt:
+            # Circuit breaker: a LinkedIn security checkpoint was detected —
+            # idle with ZERO requests until the operator clears the flag.
+            logger.warning(
+                colored("Daemon halted", "red", attrs=["bold"])
+                + " — %s",
+                site.daemon_halt_reason
+                or "clear 'daemon_halt' in Admin → Site Configuration and restart.",
+            )
+            sleep_with_heartbeat(
+                3600, heartbeat, "daemon halted — clear the flag in Admin to resume",
+            )
+            continue
         if not work_shift_active(site, shift_started):
-            # ── Daily report when the shift ends ──
-            # Fire once per day at the end of the first shift. A daemon
-            # restarted mid-day must not report a zero-activity day (the
-            # bug that produced empty Telegram reports).
-            today = date.today()
-            if _daily_report_sent_for != today:
-                _daily_report_sent_for = today
+            # ── Shift report when the daemon goes to rest ──
+            # Shift-scoped summary, fired ONCE per rest period. The loop
+            # re-enters this branch every hour while idling; without a
+            # guard the report would fire once an hour.
+            if not shift_reported:
+                shift_reported = True
                 from linkedin.notifications import send_daily_report
-                send_daily_report(session)
+                send_daily_report(session, since=shift_started_dt)
 
             logger.info(
                 colored("Work shift complete", "yellow", attrs=["bold"])

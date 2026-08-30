@@ -81,7 +81,7 @@ DEFAULT_FOLLOW_UP_DAILY_LIMIT = 25
 # Campaign config (timing + ML defaults — hardcoded, no YAML)
 # ----------------------------------------------------------------------
 CAMPAIGN_CONFIG = {
-    "check_pending_recheck_after_hours": 24,
+    "check_pending_recheck_after_hours": 36,
     "min_action_interval": 120,
     "qualification_n_mc_samples": 100,
     "min_ready_to_connect_prob": 0.9,
@@ -89,9 +89,9 @@ CAMPAIGN_CONFIG = {
     "embedding_model": "BAAI/bge-small-en-v1.5",
     "connect_delay_seconds": 10,
     "connect_no_candidate_delay_seconds": 300,
-    "enrich_min_delay_seconds": 6,
-    "enrich_max_delay_seconds": 10,
-    "enrich_max_per_page": 10,
+    "enrich_min_delay_seconds": 25,
+    "enrich_max_delay_seconds": 40,
+    "enrich_max_per_page": 4,
     "burst_min_seconds": 2700,   # 45 min
     "burst_max_seconds": 3900,   # 65 min
     "break_min_seconds": 600,    # 10 min

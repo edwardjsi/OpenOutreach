@@ -65,11 +65,12 @@ def _telegram_message(session) -> str:
         "🔒 *LinkedIn Security Checkpoint*\n\n"
         f"Account: `{account}`\n"
         f"Time: {ts}\n\n"
-        "The daemon is *paused* and waiting for manual resolution.\n\n"
+        "The daemon is *halted* and will make zero requests until you intervene.\n\n"
         "1. Open VNC: http://localhost:6080/vnc.html\n"
         "   (or connect a VNC client to localhost:5900)\n"
         "2. Solve the checkpoint challenge in the browser\n"
-        "3. The daemon will *resume automatically* once you reach /feed\n\n"
+        "3. Clear the 'daemon halt' flag in Admin → Site Configuration\n"
+        "4. Restart the daemon\n\n"
         "_No further LinkedIn requests will be made until you intervene._"
     )
 
@@ -126,14 +127,15 @@ def notify_checkpoint(session) -> None:
         "╔══════════════════════════════════════════════════════════════╗\n"
         "║  ⚠️  LINKEDIN SECURITY CHECKPOINT — MANUAL ACTION REQUIRED   ║\n"
         "║                                                              ║\n"
-        "║  The daemon is PAUSED and waiting for you to solve the      ║\n"
-        "║  checkpoint challenge via VNC. No further LinkedIn requests  ║\n"
-        "║  will be made until you intervene.                           ║\n"
+        "║  The daemon is HALTED — zero requests until you intervene. ║\n"
+        "║  Solve the challenge via VNC, then clear 'daemon halt' in  ║\n"
+        "║  Admin → Site Configuration and restart the daemon.        ║\n"
         "║                                                              ║\n"
-        "║  1. Open noVNC:  http://localhost:6080/vnc.html              ║\n"
-        "║     (or VNC client → localhost:5900)                         ║\n"
-        "║  2. Solve the challenge in the browser                       ║\n"
-        "║  3. The daemon resumes automatically once /feed loads        ║\n"
+        "║  1. Open noVNC:  http://localhost:6080/vnc.html            ║\n"
+        "║     (or VNC client → localhost:5900)                       ║\n"
+        "║  2. Solve the challenge in the browser                     ║\n"
+        "║  3. Clear 'daemon halt' in Admin → Site Configuration      ║\n"
+        "║  4. Restart the daemon                                     ║\n"
         "╚══════════════════════════════════════════════════════════════╝\n"
     )
     print(banner, file=sys.stderr, flush=True)
@@ -160,14 +162,13 @@ def notify_checkpoint(session) -> None:
         logger.warning("Failed to send Telegram checkpoint alert", exc_info=True)
 
 
-def send_daily_report(session) -> None:
-    """Query today's activity and send a Telegram summary.
+def send_daily_report(session=None, since=None) -> None:
+    """Send a Telegram summary of activity since ``since``.
 
-    Reports connects, follow-ups, new leads, and new conversations.
-    Never raises.
+    ``since`` defaults to start of today (UTC). The daemon passes its
+    shift start time so every rest period reports exactly what that
+    active period did. Never raises.
     """
-    from datetime import date, timedelta
-
     from django.utils import timezone
     from termcolor import colored
 
@@ -175,38 +176,43 @@ def send_daily_report(session) -> None:
     from linkedin.enums import ProfileState
     from linkedin.models import ActionLog
 
-    today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    window_start = since or timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         # ── Gather stats ──
         connects = ActionLog.objects.filter(
             action_type=ActionLog.ActionType.CONNECT,
-            created_at__gte=today_start,
+            created_at__gte=window_start,
         ).count()
 
         follows = ActionLog.objects.filter(
             action_type=ActionLog.ActionType.FOLLOW_UP,
-            created_at__gte=today_start,
+            created_at__gte=window_start,
         ).count()
 
         new_deals = Deal.objects.filter(
-            creation_date__gte=today_start,
+            creation_date__gte=window_start,
         ).count()
 
         new_conversations = Deal.objects.filter(
             state=ProfileState.CONNECTED.value,
-            update_date__gte=today_start,
+            update_date__gte=window_start,
         ).count()
 
         failed = Deal.objects.filter(
             state=ProfileState.FAILED.value,
-            update_date__gte=today_start,
+            update_date__gte=window_start,
         ).count()
 
         # ── Build message ──
-        ts = timezone.now().strftime("%Y-%m-%d %H:%M")
+        now_ts = timezone.now()
+        if since:
+            title = f"📊 *Shift Report — {since:%Y-%m-%d %H:%M} → {now_ts:%H:%M}*"
+        else:
+            title = f"📊 *Daily Report — {now_ts:%Y-%m-%d %H:%M}*"
+
         lines = [
-            f"📊 *Daily Report — {ts}*",
+            title,
             "",
             f"🔗 Connects sent: {connects}",
             f"💬 Follow-ups sent: {follows}",
@@ -219,7 +225,7 @@ def send_daily_report(session) -> None:
 
         # ── Terminal log ──
         logger.info(
-            colored("📊 Daily Report", "cyan", attrs=["bold"])
+            colored("📊 Shift Report", "cyan", attrs=["bold"])
             + " — connects=%d follows=%d new=%d conversations=%d failed=%d",
             connects, follows, new_deals, new_conversations, failed,
         )
@@ -232,4 +238,4 @@ def send_daily_report(session) -> None:
         if token and chat_id:
             _send_telegram(token, chat_id, text)
     except Exception:
-        logger.warning("Failed to send daily report", exc_info=True)
+        logger.warning("Failed to send shift report", exc_info=True)

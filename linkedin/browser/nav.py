@@ -5,11 +5,10 @@ import time
 from urllib.parse import unquote, urlparse, urljoin
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from termcolor import colored
 
 from linkedin.conf import (
     BROWSER_NAV_TIMEOUT_MS,
-    CHECKPOINT_HEARTBEAT_INTERVAL_S,
-    CHECKPOINT_POLL_INTERVAL_S,
     DUMP_PAGES,
     FIXTURE_PAGES_DIR,
     HUMAN_TYPE_MIN_DELAY_MS,
@@ -65,62 +64,40 @@ def goto_page(session,
 
 
 def await_checkpoint_resolution(session, page) -> None:
-    """Block until the LinkedIn security checkpoint is resolved via VNC.
+    """Halt the daemon on a LinkedIn security checkpoint.
 
     Called from ``goto_page`` when the browser lands on a ``/checkpoint/challenge/``
-    URL. Sends a single notification (bell + optional Telegram), then polls the
-    page URL every ``CHECKPOINT_POLL_INTERVAL_S`` seconds. Logs a heartbeat once
-    per ``CHECKPOINT_HEARTBEAT_INTERVAL_S`` so the daemon never goes silent.
+    URL. Sends a single notification (bell + optional Telegram) and sets the
+    ``SiteConfig.daemon_halt`` circuit breaker, then returns immediately — the
+    daemon loop idles with ZERO requests until the operator clears the flag.
 
-    Returns when the URL no longer contains ``/checkpoint/challenge/``.
-    No hard timeout — the operator solves the challenge via VNC (open
-    ``http://localhost:6080/vnc.html`` or connect to ``localhost:5900``).
-    Escape via Ctrl+C.
+    The operator must: 1) solve the challenge via VNC (open
+    ``http://localhost:6080/vnc.html`` or connect to ``localhost:5900``),
+    2) clear ``daemon_halt`` in Admin → Site Configuration, and 3) restart
+    the daemon. This deliberately replaces the old pause-and-auto-resume:
+    an account that LinkedIn flags must not be touched again automatically.
     """
+    from linkedin.models import SiteConfig
+
+    config = SiteConfig.load()
+    if config.daemon_halt:
+        logger.debug("Checkpoint already halted the daemon — waiting for operator")
+        return
+
     notify_checkpoint(session)
+    config.daemon_halt = True
+    config.daemon_halt_reason = (
+        "LinkedIn security checkpoint — solve the challenge via VNC "
+        "(http://localhost:6080/vnc.html), then clear this flag and restart the daemon."
+    )
+    config.save(update_fields=["daemon_halt", "daemon_halt_reason"])
 
     logger.warning(
-        "Blocking on LinkedIn checkpoint — daemon paused until manual VNC resolution. "
-        "Open http://localhost:6080/vnc.html (or VNC localhost:5900) and solve the challenge."
+        colored("Daemon halted", "red", attrs=["bold"])
+        + " — LinkedIn checkpoint. Solve it via VNC, clear 'daemon_halt' in "
+          "Admin → Site Configuration, then restart the daemon. No LinkedIn "
+          "requests until then."
     )
-
-    next_heartbeat = time.monotonic() + CHECKPOINT_HEARTBEAT_INTERVAL_S
-    while True:
-        current = unquote(page.url)
-
-        # ── Checkpoint resolved? ──────────────────────────────────────
-        # Must leave /checkpoint/challenge/ entirely for the checkpoint to
-        # be considered resolved. If the URL is /login or /flagship-web we
-        # are still blocked — keep looping.
-        is_resolved = "/checkpoint/challenge/" not in current
-        if is_resolved and not _is_still_blocked(current):
-            logger.info("Checkpoint resolved — URL is now %s. Resuming daemon.", current)
-            return
-
-        # Also check via JavaScript to catch VNC-initiated navigation
-        try:
-            js_url = page.evaluate("window.location.href")
-            if js_url and "/checkpoint/challenge/" not in unquote(js_url):
-                is_js_resolved = True
-                if is_js_resolved and not _is_still_blocked(js_url):
-                    logger.info(
-                        "Checkpoint resolved (via JS) — URL is now %s. Resuming daemon.", unquote(js_url),
-                    )
-                    return
-        except Exception:
-            pass  # page might be closed or stale
-
-        now = time.monotonic()
-        if now >= next_heartbeat:
-            logger.info(
-                "alive — waiting for LinkedIn checkpoint resolution "
-                "(open VNC and solve the challenge to resume) "
-                "current URL: %s",
-                current,
-            )
-            next_heartbeat = now + CHECKPOINT_HEARTBEAT_INTERVAL_S
-
-        time.sleep(CHECKPOINT_POLL_INTERVAL_S)
 
 
 
@@ -203,20 +180,47 @@ def resolve_locator(page, candidates, timeout_per_ms: int = 5000):
 
 
 TOP_CARD_SELECTORS = [
+    # LinkedIn's current profile experience (2025+): hashed CSS-module class
+    # names, no h1, no data-member-id. The header card (name, headline,
+    # connect-state button, More button) is the FIRST descendant <section>
+    # inside the "Primary content" wrapper — verified against live page dumps.
+    'section[aria-label="Primary content"] section',
+    # Legacy layouts (pre-2025 redesign)
     'section:has(div.top-card-background-hero-image)',
     'section[data-member-id]',
     'section.artdeco-card:has(> div.pv-top-card)',
     'section:has(> div[class*="pv-top-card"])',
     'section[componentkey*="com.linkedin.sdui.profile.card"]',
+    'section.artdeco-card:has(div.pv-top-card-v2)',
+    'section:has(div.profile-card)',
+    'div.profile-card',
+    'section:has(div[class*="profile-card"])',
+    '[data-test-id*="profile-card"]',
 ]
 
 
-def find_top_card(session):
-    top_card = find_first_visible(session.page, TOP_CARD_SELECTORS)
-    if top_card is None:
-        logger.warning("Top card not found on %s", session.page.url)
-        raise SkipProfile("Top Card section not found")
-    return top_card
+def find_top_card(session, timeout_s: float = 8.0):
+    """Return the visible profile top card, waiting up to ``timeout_s``.
+
+    The top card can render after ``domcontentloaded`` on slow profile
+    pages, so a single one-shot selector check is unreliable. Cycle the
+    selector list, waiting briefly for each to become visible, until the
+    budget is spent. Raises ``SkipProfile`` on failure — callers treat it
+    as a transient page-state issue, not a property of the profile.
+    """
+    page = session.page
+    per_selector_ms = max(int(timeout_s * 1000 / max(len(TOP_CARD_SELECTORS), 1)), 50)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        for selector in TOP_CARD_SELECTORS:
+            locator = page.locator(selector).first
+            try:
+                locator.wait_for(state="visible", timeout=per_selector_ms)
+                return locator
+            except PlaywrightTimeoutError:
+                continue
+    logger.warning("Top card not found on %s", page.url)
+    raise SkipProfile("Top Card section not found")
 
 
 def human_type(locator, text: str, min_delay: int = HUMAN_TYPE_MIN_DELAY_MS, max_delay: int = HUMAN_TYPE_MAX_DELAY_MS):

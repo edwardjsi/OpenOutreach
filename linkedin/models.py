@@ -65,6 +65,23 @@ class SiteConfig(models.Model):
         help_text="Your numeric chat ID (from @userinfobot) or @channelusername.",
     )
 
+    # ── Circuit breaker (security-checkpoint halt) ──
+    # When LinkedIn serves a checkpoint challenge, the daemon sets this flag
+    # and idles with ZERO requests instead of pausing-and-resuming on the
+    # flagged account. The operator solves the challenge via VNC, then clears
+    # the flag here (Admin → Site Configuration) and restarts the daemon.
+    daemon_halt = models.BooleanField(
+        default=False,
+        help_text="When set, the daemon idles without making any LinkedIn request. "
+        "Set automatically when a security checkpoint is detected; clear it after "
+        "solving the challenge to resume.",
+    )
+    daemon_halt_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Why the daemon was halted (set automatically on checkpoint).",
+    )
+
     class Meta:
         app_label = "linkedin"
         verbose_name = "Site Configuration"

@@ -179,3 +179,65 @@ class TestSendDailyReport:
         assert "Connects sent: 1" in sent["text"]
         assert "New conversations: 1" in sent["text"]
         assert "Failed: 1" in sent["text"]
+
+    def test_since_window_scopes_counts(self):
+        """A ``since`` window excludes activity before it (shift-scoped report)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from crm.models import Deal
+        from linkedin.enums import ProfileState
+        from linkedin.models import ActionLog, Campaign, LinkedInProfile
+        from linkedin.notifications import send_daily_report
+        from tests.factories import DealFactory, LeadFactory, UserFactory
+
+        campaign = Campaign.objects.create(name="Window Test Campaign")
+        profile = LinkedInProfile.objects.create(
+            user=UserFactory(),
+            linkedin_username="window@example.com",
+            linkedin_password="secret",
+        )
+
+        since = timezone.now() - timedelta(hours=1)
+
+        # Inside the window → counts.
+        ActionLog.objects.create(
+            action_type=ActionLog.ActionType.CONNECT,
+            campaign=campaign,
+            linkedin_profile=profile,
+        )
+        DealFactory(lead=LeadFactory(), campaign=campaign, state=ProfileState.CONNECTED.value)
+
+        # Outside the window (2h ago) → must be excluded.
+        old = since - timedelta(hours=1)
+        old_action = ActionLog.objects.create(
+            action_type=ActionLog.ActionType.CONNECT,
+            campaign=campaign,
+            linkedin_profile=profile,
+        )
+        old_deal = DealFactory(
+            lead=LeadFactory(), campaign=campaign, state=ProfileState.CONNECTED.value,
+        )
+        ActionLog.objects.filter(pk=old_action.pk).update(created_at=old)
+        Deal.objects.filter(pk=old_deal.pk).update(update_date=old, creation_date=old)
+
+        config = SiteConfig.load()
+        config.telegram_bot_token = "123:abc"
+        config.telegram_chat_id = "987654"
+
+        sent = {}
+
+        def _capture(token, chat_id, text):
+            sent["text"] = text
+            return True
+
+        with (
+            patch("linkedin.models.SiteConfig.load", return_value=config),
+            patch("linkedin.notifications._send_telegram", side_effect=_capture),
+        ):
+            send_daily_report(session=None, since=since)
+
+        assert "Shift Report" in sent["text"]
+        assert "Connects sent: 1" in sent["text"]
+        assert "New conversations: 1" in sent["text"]

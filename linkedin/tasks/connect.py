@@ -12,6 +12,7 @@ from typing import Callable
 from django.utils import timezone
 from termcolor import colored
 
+from linkedin.browser.nav import dump_page_html
 from linkedin.conf import CAMPAIGN_CONFIG
 from linkedin.db.deals import increment_connect_attempts, set_profile_state
 from linkedin.db.leads import disqualify_lead
@@ -150,8 +151,22 @@ def handle_connect(task, session, qualifiers):
         set_profile_state(session, public_id, ProfileState.FAILED.value,
                           reason=f"Profile inaccessible: {e}")
     except SkipProfile as e:
+        # A missing top card is usually a transient page-state issue (slow
+        # render, LinkedIn layout change) — not a property of the profile.
+        # Don't burn the deal on the first miss: track the attempt, send it
+        # back to the qualified pool, and only FAIL after MAX_CONNECT_ATTEMPTS.
         logger.warning("Skipping %s: %s", public_id, e)
-        set_profile_state(session, public_id, ProfileState.FAILED.value)
+        dump_page_html(session, {"public_identifier": public_id})
+        attempts = increment_connect_attempts(session, public_id)
+        if attempts >= MAX_CONNECT_ATTEMPTS:
+            reason = f"Unreachable: {e} after {attempts} attempts"
+            set_profile_state(session, public_id, ProfileState.FAILED.value, reason=reason)
+            logger.warning("Disqualified %s — %s", public_id, reason)
+        else:
+            set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
+            logger.warning(
+                "%s: skipped attempt %d/%d — %s", public_id, attempts, MAX_CONNECT_ATTEMPTS, e,
+            )
 
     _reschedule()
 

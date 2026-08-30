@@ -1,22 +1,21 @@
-"""Tests for checkpoint detection in goto_page.
+"""Tests for checkpoint handling — circuit breaker (daemon halt).
 
-Uses a fake page object whose ``url`` property transitions from a checkpoint
-URL to ``/feed`` after N polls, verifying that goto_page blocks (calls
-await_checkpoint_resolution) instead of raising RuntimeError immediately.
+A LinkedIn security checkpoint sets ``SiteConfig.daemon_halt``: the daemon
+idles with zero network traffic until the operator solves the challenge,
+clears the flag in Admin, and restarts. There is no auto-resume.
 """
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from linkedin.browser.nav import goto_page, await_checkpoint_resolution
 from linkedin.exceptions import CheckpointChallengeError
+from linkedin.models import SiteConfig
 
 
 class FakePage:
-    """Fake Playwright page with a controllable URL transition."""
+    """Fake Playwright page with a controllable URL."""
 
     def __init__(self, urls: list[str]):
-        """``urls`` is a list of URLs to return on successive ``url`` reads.
-        After the list is exhausted, the last URL is returned indefinitely."""
         self._urls = list(urls)
         self._idx = 0
         self._current = self._urls[0]
@@ -29,7 +28,7 @@ class FakePage:
         return self._current
 
     def wait_for_url(self, *args, **kwargs):
-        pass  # no-op
+        pass
 
 
 class FakeSession:
@@ -42,37 +41,69 @@ class FakeSession:
         pass
 
 
-class TestGotoPageCheckpoint:
-    def test_checkpoint_detected_blocks_then_resolves(self):
-        """goto_page should block on checkpoint, then complete when URL → /feed."""
-        # URL sequence: checkpoint → checkpoint → /feed (after 2 polls)
-        page = FakePage([
-            "https://www.linkedin.com/checkpoint/challenge/abc123",
-            "https://www.linkedin.com/checkpoint/challenge/abc123",
-            "https://www.linkedin.com/feed/",
-        ])
+@pytest.mark.django_db
+class TestCheckpointHalt:
+    def _reset(self):
+        cfg = SiteConfig.load()
+        cfg.daemon_halt = False
+        cfg.daemon_halt_reason = ""
+        cfg.save(update_fields=["daemon_halt", "daemon_halt_reason"])
+
+    def test_checkpoint_sets_halt_and_notifies_once(self):
+        """First checkpoint detection notifies and sets the halt flag."""
+        self._reset()
+        page = FakePage(["https://www.linkedin.com/checkpoint/challenge/abc"])
         session = FakeSession(page)
 
-        # Patch notify_checkpoint so we don't spam stderr/bell
-        with patch("linkedin.browser.nav.notify_checkpoint") as mock_notify, \
-             patch("linkedin.browser.nav.time.sleep"):  # no real sleeping
-            goto_page(
-                session,
-                action=lambda: None,
-                expected_url_pattern="/feed",
-                error_message="should not see this",
-            )
+        with patch("linkedin.browser.nav.notify_checkpoint") as mock_notify:
+            await_checkpoint_resolution(session, page)
+            mock_notify.assert_called_once()
 
-        # notify_checkpoint should have been called exactly once
+        cfg = SiteConfig.load()
+        assert cfg.daemon_halt is True
+        assert "checkpoint" in cfg.daemon_halt_reason.lower()
+
+    def test_repeat_detection_does_not_renotify(self):
+        """Subsequent detections are no-ops once the halt flag is set."""
+        self._reset()
+        page = FakePage(["https://www.linkedin.com/checkpoint/challenge/abc"])
+        session = FakeSession(page)
+
+        with patch("linkedin.browser.nav.notify_checkpoint") as mock_notify:
+            await_checkpoint_resolution(session, page)
+            await_checkpoint_resolution(session, page)
+
         assert mock_notify.call_count == 1
 
-    def test_non_checkpoint_mismatch_still_raises(self):
-        """A non-checkpoint mismatched URL should still raise RuntimeError."""
+    def test_goto_page_raises_challenge_error_when_still_on_checkpoint(self):
+        """After halting, goto_page surfaces CheckpointChallengeError so the
+        daemon loop drops the task and enters the halted idle state."""
+        self._reset()
+        page = FakePage(["https://www.linkedin.com/checkpoint/challenge/abc"])
+        session = FakeSession(page)
+
+        with patch("linkedin.browser.nav.notify_checkpoint"):
+            with pytest.raises(CheckpointChallengeError):
+                goto_page(
+                    session,
+                    action=lambda: None,
+                    expected_url_pattern="/feed",
+                    error_message="should not see this",
+                )
+
+    def test_non_checkpoint_mismatch_still_raises_runtime_error(self):
+        """The halt flag is enforced by the daemon loop, not per-navigation —
+        a plain URL mismatch still raises RuntimeError."""
+        self._reset()
+        cfg = SiteConfig.load()
+        cfg.daemon_halt = True
+        cfg.daemon_halt_reason = "test"
+        cfg.save(update_fields=["daemon_halt", "daemon_halt_reason"])
+
         page = FakePage(["https://www.linkedin.com/some-other-page/"])
         session = FakeSession(page)
 
-        with patch("linkedin.browser.nav.notify_checkpoint"), \
-             patch("linkedin.browser.nav.time.sleep"):
+        with patch("linkedin.browser.nav.notify_checkpoint"):
             with pytest.raises(RuntimeError, match="expected"):
                 goto_page(
                     session,
@@ -82,9 +113,10 @@ class TestGotoPageCheckpoint:
                 )
 
     def test_404_still_raises_skipprofile(self):
-        """A 404 URL should still raise SkipProfile."""
+        """A 404 URL still raises SkipProfile."""
         from linkedin.exceptions import SkipProfile
 
+        self._reset()
         page = FakePage(["https://www.linkedin.com/404/"])
         session = FakeSession(page)
 
@@ -95,35 +127,3 @@ class TestGotoPageCheckpoint:
                 expected_url_pattern="/feed",
                 error_message="should not see this",
             )
-
-
-class TestAwaitCheckpointResolution:
-    def test_returns_when_url_leaves_checkpoint(self):
-        """await_checkpoint_resolution returns when URL no longer has /checkpoint/challenge/."""
-        page = FakePage([
-            "https://www.linkedin.com/checkpoint/challenge/abc",
-            "https://www.linkedin.com/feed/",
-        ])
-        session = FakeSession(page)
-
-        with patch("linkedin.browser.nav.notify_checkpoint") as mock_notify, \
-             patch("linkedin.browser.nav.time.sleep"):
-            await_checkpoint_resolution(session, page)
-
-        assert mock_notify.call_count == 1
-
-    def test_notify_called_exactly_once(self):
-        """notify_checkpoint fires once, not per poll."""
-        page = FakePage([
-            "https://www.linkedin.com/checkpoint/challenge/abc",
-            "https://www.linkedin.com/checkpoint/challenge/abc",
-            "https://www.linkedin.com/checkpoint/challenge/abc",
-            "https://www.linkedin.com/feed/",
-        ])
-        session = FakeSession(page)
-
-        with patch("linkedin.browser.nav.notify_checkpoint") as mock_notify, \
-             patch("linkedin.browser.nav.time.sleep"):
-            await_checkpoint_resolution(session, page)
-
-        assert mock_notify.call_count == 1

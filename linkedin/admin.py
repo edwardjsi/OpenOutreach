@@ -34,6 +34,14 @@ class SiteConfigAdmin(admin.ModelAdmin):
                 "@userinfobot, then test with: python manage.py testtelegram"
             ),
         }),
+        ("Daemon Halt (circuit breaker)", {
+            "fields": ("daemon_halt", "daemon_halt_reason"),
+            "description": (
+                "Set automatically when LinkedIn serves a security checkpoint — "
+                "the daemon idles with ZERO requests. Solve the challenge via VNC, "
+                "then uncheck 'daemon_halt' here and restart the daemon."
+            ),
+        }),
     )
 
     def has_add_permission(self, request):

@@ -10,8 +10,9 @@ import pytest
 
 from linkedin.actions.connect import SELECTORS as CONNECT_SELECTORS
 from linkedin.actions.status import SELECTORS as STATUS_SELECTORS
-from linkedin.browser.nav import TOP_CARD_SELECTORS
+from linkedin.browser.nav import TOP_CARD_SELECTORS, find_top_card as find_top_card_live
 from linkedin.conf import FIXTURE_PAGES_DIR
+from linkedin.exceptions import SkipProfile
 from tests.browser.conftest import load_fixture
 
 
@@ -132,3 +133,57 @@ def test_pending_dump_has_pending_button(page, fixture):
     assert top_card is not None, f"pending/{fixture}: no top card"
     pending = top_card.locator(STATUS_SELECTORS["pending_button"]).count()
     assert pending, f"pending/{fixture}: no Pending button"
+
+
+# -- synthetic modern-layout regression tests ---------------------------------
+# The live DOM can't be scraped from tests, so assert the wait-based
+# find_top_card matches the known LinkedIn 2024+ markup shapes directly.
+
+
+class _FakeSession:
+    """Minimal session stand-in: find_top_card only touches ``page``."""
+
+    def __init__(self, page):
+        self.page = page
+
+
+class TestFindTopCardLive:
+    def test_modern_pv_top_card_v2(self, page):
+        """LinkedIn's pv-top-card-v2 section must be found."""
+        page.set_content(
+            "<html><body>"
+            '<section class="artdeco-card pv-top-card-v2">'
+            '<div class="pv-top-card-v2-section">'
+            '<button aria-label="Invite Alice to connect">Connect</button>'
+            "</div></section></body></html>"
+        )
+        top_card = find_top_card_live(_FakeSession(page), timeout_s=2)
+        assert "Connect" in top_card.inner_text()
+
+    def test_profile_card_layout(self, page):
+        """The profile-card wrapper (current redesign) must be found."""
+        page.set_content(
+            "<html><body>"
+            '<section class="scaffold-layout__main">'
+            '<div class="profile-card"><h1>Bob Example</h1></div>'
+            "</section></body></html>"
+        )
+        top_card = find_top_card_live(_FakeSession(page), timeout_s=2)
+        assert "Bob Example" in top_card.inner_text()
+
+    def test_legacy_data_member_id(self, page):
+        """The long-standing section[data-member-id] layout must still work."""
+        page.set_content(
+            "<html><body>"
+            '<section data-member-id="urn:li:member:123">'
+            '<h1>Carol Example</h1>'
+            "</section></body></html>"
+        )
+        top_card = find_top_card_live(_FakeSession(page), timeout_s=2)
+        assert "Carol Example" in top_card.inner_text()
+
+    def test_missing_top_card_raises_skip(self, page):
+        """No top-card markup → SkipProfile, so the handler can retry."""
+        page.set_content("<html><body><div>no top card here</div></body></html>")
+        with pytest.raises(SkipProfile):
+            find_top_card_live(_FakeSession(page), timeout_s=0.3)

@@ -178,7 +178,7 @@ class TestHandleConnect:
     @patch("linkedin.actions.search.visit_profile")
     @patch("linkedin.actions.connect.send_connection_request")
     @patch("linkedin.actions.status.get_connection_status")
-    def test_handles_skip_profile(self, mock_status, mock_send, mock_visit, mock_strategy, fake_session):
+    def test_skip_profile_demotes_to_qualified_and_retries(self, mock_status, mock_send, mock_visit, mock_strategy, fake_session):
         _make_qualified(fake_session)
         mock_strategy.return_value = _mock_strategy(self._candidate())
         mock_status.return_value = ProfileState.QUALIFIED
@@ -188,7 +188,44 @@ class TestHandleConnect:
         qualifiers = _build_context(fake_session)
         handle_connect(task, fake_session, qualifiers)
 
-        _assert_deal_state(fake_session, "alice", ProfileState.FAILED)
+        # Transient skip → back to the qualified pool, not FAILED
+        deal = Deal.objects.get(
+            lead__linkedin_url="https://www.linkedin.com/in/alice/",
+            campaign=fake_session.campaign,
+        )
+        assert deal.state == ProfileState.QUALIFIED
+        assert deal.connect_attempts == 1
+        # The connect loop keeps going — a fresh task is enqueued
+        assert Task.objects.filter(
+            task_type=Task.TaskType.CONNECT,
+            status=Task.Status.PENDING,
+            payload__campaign_id=fake_session.campaign.pk,
+        ).exists()
+
+    @patch("linkedin.tasks.connect.strategy_for")
+    @patch("linkedin.actions.search.visit_profile")
+    @patch("linkedin.actions.connect.send_connection_request")
+    @patch("linkedin.actions.status.get_connection_status")
+    def test_skip_profile_fails_after_max_attempts(self, mock_status, mock_send, mock_visit, mock_strategy, fake_session):
+        _make_qualified(fake_session)
+        mock_strategy.return_value = _mock_strategy(self._candidate())
+        mock_status.return_value = ProfileState.QUALIFIED
+        mock_send.side_effect = SkipProfile("bad profile")
+
+        deal = Deal.objects.get(
+            lead__linkedin_url="https://www.linkedin.com/in/alice/",
+            campaign=fake_session.campaign,
+        )
+        deal.connect_attempts = 2  # this run makes it 3 = MAX_CONNECT_ATTEMPTS
+        deal.save(update_fields=["connect_attempts"])
+
+        task = _make_task(Task.TaskType.CONNECT, {"campaign_id": fake_session.campaign.pk})
+        qualifiers = _build_context(fake_session)
+        handle_connect(task, fake_session, qualifiers)
+
+        deal.refresh_from_db()
+        assert deal.state == ProfileState.FAILED
+        assert "bad profile" in deal.reason
 
     @patch("linkedin.tasks.connect.strategy_for")
     def test_reschedules_when_no_candidate(self, mock_strategy, fake_session):

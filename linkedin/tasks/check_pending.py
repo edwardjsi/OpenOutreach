@@ -12,6 +12,7 @@ import logging
 
 from termcolor import colored
 
+from linkedin.browser.nav import dump_page_html
 from linkedin.db.deals import get_profile_dict_for_public_id, set_profile_state
 from linkedin.enums import ProfileState
 from linkedin.exceptions import SkipProfile
@@ -56,8 +57,12 @@ def handle_check_pending(task, session, qualifiers):
     try:
         new_state = get_connection_status(session, profile)
     except SkipProfile as e:
+        # A missing top card is a transient page-state issue (slow render,
+        # LinkedIn layout change) — not proof the invite was declined.
+        # Keep the Deal PENDING; reconcile re-creates the check on the next
+        # idle cycle. Failing here would destroy accepted invites.
         logger.warning("Skipping %s: %s", public_id, e)
-        set_profile_state(session, public_id, ProfileState.FAILED.value)
+        dump_page_html(session, {"public_identifier": public_id})
         return
 
     if new_state == ProfileState.PENDING:
