@@ -84,6 +84,29 @@ HEARTBEAT_INTERVAL = 300  # 5 minutes
 HEARTBEAT_SLICE = 60      # wake every minute during long sleeps
 
 
+def _now() -> float:
+    """Monotonic clock that includes suspend time (Linux CLOCK_BOOTTIME).
+
+    ``time.monotonic()`` freezes while the laptop is asleep, so a lid close
+    would stretch task countdowns and the work-shift timer by the whole nap.
+    CLOCK_BOOTTIME keeps counting, so on wake the daemon catches up (overdue
+    tasks become ready immediately) and the shift burns wall-clock hours.
+    Falls back to ``time.monotonic()`` on platforms without CLOCK_BOOTTIME
+    (macOS/Windows).
+    """
+    boottime = getattr(time, "CLOCK_BOOTTIME", None)
+    if boottime is not None:
+        return time.clock_gettime(boottime)
+    return time.monotonic()
+
+
+def _fmt_remaining(seconds: float) -> str:
+    """Format a countdown as ``HhMMm`` for heartbeat messages."""
+    total_minutes = max(int(seconds), 0) // 60
+    h, m = divmod(total_minutes, 60)
+    return f"{h}h{m:02d}m"
+
+
 # ── Cloud promo ──────────────────────────────────────────────────────
 
 _CLOUD_MESSAGES = [
@@ -163,18 +186,24 @@ class Heartbeat:
         logger.info(colored("alive", "cyan") + " — %s", context)
 
 
-def sleep_with_heartbeat(seconds: float, heartbeat: Heartbeat, context: str) -> None:
+def sleep_with_heartbeat(seconds: float, heartbeat: Heartbeat, context) -> None:
     """``time.sleep(seconds)`` that wakes every ``HEARTBEAT_SLICE`` seconds to
     let *heartbeat* fire. Use for any idle sleep longer than the heartbeat
     interval so the daemon never goes silent for more than 5 minutes.
+
+    ``context`` may be a static string or a callable ``(remaining) -> str``;
+    a callable is re-invoked at every heartbeat so messages can show a live
+    countdown. The countdown uses ``_now()`` (CLOCK_BOOTTIME), so laptop
+    suspend time counts and the sleep ends shortly after wake.
     """
-    end = time.monotonic() + seconds
+    end = _now() + seconds
     while True:
-        remaining = end - time.monotonic()
+        remaining = end - _now()
         if remaining <= 0:
             return
         time.sleep(min(HEARTBEAT_SLICE, remaining))
-        heartbeat.maybe_log(context)
+        message = context(remaining) if callable(context) else context
+        heartbeat.maybe_log(message)
 
 
 # ── Human-rhythm pacing ──────────────────────────────────────────────
@@ -262,15 +291,15 @@ def work_shift_active(config, started_at: float) -> bool:
     """True when the daemon should keep working.
 
     Shift model: when ``enable_active_hours`` is on, the daemon works for
-    ``work_shift_hours`` measured from ``started_at`` (``time.monotonic()``
-    captured when the daemon started), then idles until the daemon is
-    restarted — no fixed wall-clock window, no timezone, no rest days.
-    When the flag is off the daemon runs 24/7.
+    ``work_shift_hours`` measured from ``started_at`` (``_now()`` —
+    CLOCK_BOOTTIME, so laptop sleep counts against the shift), then idles
+    until the daemon is restarted — no fixed wall-clock window, no timezone,
+    no rest days. When the flag is off the daemon runs 24/7.
     """
     if not config.enable_active_hours:
         return True
     shift_seconds = float(config.work_shift_hours or 0) * 3600.0
-    return time.monotonic() - started_at < shift_seconds
+    return _now() - started_at < shift_seconds
 
 
 # ------------------------------------------------------------------
@@ -307,7 +336,7 @@ def run_daemon(session):
 
     # Single-threaded: one task at a time, no concurrent enqueuing,
     # so sleeping until the next scheduled_at is safe.
-    shift_started = time.monotonic()
+    shift_started = _now()
     shift_started_dt = timezone.now()
     _exit_state.shift_started_dt = shift_started_dt
     _install_exit_hooks(session)
@@ -366,7 +395,9 @@ def run_daemon(session):
                 h, m = int(wait // 3600), int(wait % 3600 // 60)
                 logger.info("Next task in %dh%02dm — sleeping", h, m)
                 sleep_with_heartbeat(
-                    wait, heartbeat, f"next task in {h}h{m:02d}m",
+                    wait,
+                    heartbeat,
+                    lambda remaining: f"next task in {_fmt_remaining(remaining)}",
                 )
                 rhythm.reset()
             continue
