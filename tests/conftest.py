@@ -36,6 +36,11 @@ class FakeAccountSession:
         self.django_user = django_user
         self.linkedin_profile = linkedin_profile
         self.campaign = campaign
+        self.self_profile = {
+            "first_name": "Diego",
+            "last_name": "Ramirez",
+            "urn": "urn:li:fsd_profile:TEST",
+        }
 
     @property
     def campaigns(self):

@@ -118,3 +118,13 @@ If Telegram isn't configured, the terminal bell + log banner still fire as a zer
 ### Volume Mounts
 
 The pre-built `docker run` command uses a named Docker volume (`openoutreach_db`) mounted at `/app/data` for data persistence (database, config). The compose setup (`local.yml`) mounts the entire repo `.:/app` for live code editing during development.
+
+### Use an existing `db.sqlite3`
+
+To run against a database file you already have, bind-mount the host **directory** containing it onto `/app/data` (the app opens `/app/data/db.sqlite3`):
+
+```bash
+docker run --pull always -it -e ENABLE_VNC=true -p 6080:6080 -p 5900:5900 -v ~/.openoutreach/data:/app/data ghcr.io/eracle/openoutreach:latest
+```
+
+Place your `db.sqlite3` inside the mounted directory (`~/.openoutreach/data/` above; swap for your own path). Two caveats: the dir and file must be writable by uid 1000 (the container's `ubuntu` user) or writes fail with `readonly database`; and `rundaemon` runs `migrate` on startup, so back the file up first (`cp db.sqlite3{,.bak}`) if it's precious.

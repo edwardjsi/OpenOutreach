@@ -156,6 +156,7 @@ def _render_system_prompt(session, deal, recent_messages: list) -> str:
     now = timezone.now()
     return template.render(
         self_name=self_name,
+        contact_email=session.linkedin_profile.linkedin_username,
         product_docs=campaign.product_docs or "",
         campaign_objective=campaign.campaign_objective or "",
         booking_link=campaign.booking_link or "",

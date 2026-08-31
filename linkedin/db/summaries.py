@@ -47,6 +47,27 @@ Output a JSON object matching the schema you have been given.
 """
 
 
+def _build_identity_binding(seller_name: str) -> str:
+    """Return a prompt fragment binding [Me] to the seller's name.
+
+    Closes the bug where a [Lead] message greeting the seller by name
+    (`"Hola Diego, gracias..."`) causes the LLM to infer `the lead's name is
+    Diego` — the [Me]/[Lead] tags carry no name binding on their own.
+    """
+    return (
+        f"\nIdentity binding (read carefully):\n"
+        f"- [Me] is named {seller_name}.\n"
+        f"- When a [Lead] message mentions `{seller_name}`, that is a reference "
+        f"to [Me] — never attribute it as a fact about the lead."
+    )
+
+
+def seller_name_from(session) -> str:
+    """Return the seller's first name as known to the LLM, with a username fallback."""
+    sp = session.self_profile
+    return (sp.get("first_name") or "").strip() or session.django_user.username
+
+
 class FactList(BaseModel):
     """Structured LLM output for fact extraction."""
 
@@ -71,11 +92,18 @@ class _ReconcileResponse(BaseModel):
 
 # ── LLM boundary ──
 
-def extract_facts(text: str, *, context: str = "") -> list[str]:
+def extract_facts(
+    text: str,
+    *,
+    seller_name: str,
+    context: str = "",
+) -> list[str]:
     """Extract a flat list of atomic facts from `text`.
 
-    `context` is an optional preamble (campaign objective, product docs) that
-    biases what counts as a relevant fact. Returns `[]` for empty inputs.
+    `seller_name` binds the [Me] tag so the LLM stops attributing seller-name
+    mentions in [Lead] messages to the lead. `context` is an optional
+    preamble (campaign objective, product docs) that biases what counts as a
+    relevant fact. Returns `[]` for empty inputs.
     """
     if not text or not text.strip():
         return []
@@ -84,7 +112,7 @@ def extract_facts(text: str, *, context: str = "") -> list[str]:
 
     from linkedin.llm import get_llm_model, run_agent_sync
 
-    system = _FACT_EXTRACTION_PROMPT
+    system = _FACT_EXTRACTION_PROMPT + _build_identity_binding(seller_name)
     if context:
         system = f"{system}\n\nContext for relevance:\n{context}"
 
@@ -290,7 +318,11 @@ def materialize_profile_summary_if_missing(deal, session) -> None:
         context_parts.append(f"Product context: {campaign.product_docs}")
     context = "\n\n".join(context_parts)
 
-    facts = extract_facts(profile_text, context=context)
+    facts = extract_facts(
+        profile_text,
+        seller_name=seller_name_from(session),
+        context=context,
+    )
     deal.profile_summary = {"facts": facts}
     deal.save(update_fields=["profile_summary"])
     logger.info(
@@ -329,11 +361,14 @@ def _format_messages_for_extraction(messages: Iterable) -> str:
     return "\n".join(lines)
 
 
-def update_chat_summary(deal, new_messages) -> None:
+def update_chat_summary(deal, new_messages, *, seller_name: str) -> None:
     """Fold newly-synced ChatMessages into `deal.chat_summary` incrementally.
 
     Existing facts are preserved; only new messages are sent to the LLM.
-    Empty input is a no-op (e.g., a sync that found no new messages).
+    `seller_name` binds the [Me] tag during both extraction and
+    reconciliation, so previously-stored contaminated facts can be demoted on
+    the next pass. Empty input is a no-op (e.g., a sync that found no new
+    messages).
     """
     new_messages = list(new_messages)
     if not new_messages:
@@ -343,12 +378,12 @@ def update_chat_summary(deal, new_messages) -> None:
     if not formatted:
         return
 
-    new_facts = extract_facts(formatted)
+    new_facts = extract_facts(formatted, seller_name=seller_name)
     if not new_facts:
         return
 
     existing = (deal.chat_summary or {}).get("facts", [])
-    reconciled = reconcile_facts(existing, new_facts)
+    reconciled = reconcile_facts(existing, new_facts, seller_name=seller_name)
     deal.chat_summary = {"facts": reconciled}
     deal.save(update_fields=["chat_summary"])
     logger.info(
@@ -364,18 +399,28 @@ def update_chat_summary(deal, new_messages) -> None:
 #   - vector-store ops → in-memory dict (Deal.chat_summary is a flat list)
 #   - mem0's `self.llm.generate_response` → pydantic-ai Agent.run via run_agent_sync
 
-def reconcile_facts(existing: list[str], new_facts: list[str]) -> list[str]:
+def reconcile_facts(
+    existing: list[str], new_facts: list[str],
+    *, seller_name: str | None = None,
+) -> list[str]:
     """Reconcile `new_facts` against `existing` via mem0's UPDATE prompt.
 
+    ``seller_name`` is optional: when None (e.g. market-persona
+    reconciliation, which generalizes away from individuals), the seller
+    contamination binding is skipped.
+    The seller binding is prepended so mem0's prompt can DELETE stored facts
+    that mistakenly attribute the seller's name to the lead.
     Returns the new flat fact list after applying ADD/UPDATE/DELETE/NONE.
     """
     if not new_facts:
         return list(existing)
-    actions = _request_memory_actions(existing, new_facts)
+    actions = _request_memory_actions(existing, new_facts, seller_name)
     return _apply_memory_actions(existing, actions)
 
 
-def _request_memory_actions(existing: list[str], new_facts: list[str]) -> list[_MemoryAction]:
+def _request_memory_actions(
+    existing: list[str], new_facts: list[str], seller_name: str | None,
+) -> list[_MemoryAction]:
     """Run mem0's UPDATE prompt and return the parsed event list.
 
     Calls the LLM in raw text mode and then routes the response through the
@@ -388,7 +433,15 @@ def _request_memory_actions(existing: list[str], new_facts: list[str]) -> list[_
     from linkedin.llm import get_llm_model, run_agent_sync
 
     old_memory = [{"id": str(idx), "text": fact} for idx, fact in enumerate(existing)]
-    prompt = get_update_memory_messages(old_memory, new_facts, None)
+    base = get_update_memory_messages(old_memory, new_facts, None)
+    if seller_name:
+        prompt = (
+            f"Context: in the source conversation, [Me] is {seller_name}. "
+            f"Existing facts that describe `{seller_name}` as if they were the lead "
+            f"are contamination — issue a DELETE for them.\n\n{base}"
+        )
+    else:
+        prompt = base
 
     agent = Agent(get_llm_model(), model_settings={"temperature": 0.0, "timeout": 60})
     text = run_agent_sync(agent.run(prompt)).output
