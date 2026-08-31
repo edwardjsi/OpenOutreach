@@ -162,12 +162,14 @@ def notify_checkpoint(session) -> None:
         logger.warning("Failed to send Telegram checkpoint alert", exc_info=True)
 
 
-def send_daily_report(session=None, since=None) -> None:
+def send_daily_report(session=None, since=None, stopped: bool = False) -> None:
     """Send a Telegram summary of activity since ``since``.
 
     ``since`` defaults to start of today (UTC). The daemon passes its
     shift start time so every rest period reports exactly what that
-    active period did. Never raises.
+    active period did. Pass ``stopped=True`` when the daemon exits
+    before the shift completes (operator close, crash) — the title
+    reflects a stop instead of a natural shift end. Never raises.
     """
     from django.utils import timezone
     from termcolor import colored
@@ -206,7 +208,9 @@ def send_daily_report(session=None, since=None) -> None:
 
         # ── Build message ──
         now_ts = timezone.now()
-        if since:
+        if stopped:
+            title = f"🛑 *Daemon Stopped — {since:%Y-%m-%d %H:%M} → {now_ts:%H:%M}*"
+        elif since:
             title = f"📊 *Shift Report — {since:%Y-%m-%d %H:%M} → {now_ts:%H:%M}*"
         else:
             title = f"📊 *Daily Report — {now_ts:%Y-%m-%d %H:%M}*"
@@ -224,9 +228,13 @@ def send_daily_report(session=None, since=None) -> None:
         text = "\n".join(lines)
 
         # ── Terminal log ──
+        label = (
+            colored("🛑 Daemon stopped", "red", attrs=["bold"])
+            if stopped
+            else colored("📊 Shift Report", "cyan", attrs=["bold"])
+        )
         logger.info(
-            colored("📊 Shift Report", "cyan", attrs=["bold"])
-            + " — connects=%d follows=%d new=%d conversations=%d failed=%d",
+            label + " — connects=%d follows=%d new=%d conversations=%d failed=%d",
             connects, follows, new_deals, new_conversations, failed,
         )
 
@@ -236,6 +244,44 @@ def send_daily_report(session=None, since=None) -> None:
         token = (config.telegram_bot_token or "").strip()
         chat_id = (config.telegram_chat_id or "").strip()
         if token and chat_id:
-            _send_telegram(token, chat_id, text)
+            ok = _send_telegram(token, chat_id, text)
+            if ok:
+                logger.info("Shift report sent to Telegram (%s)", chat_id)
+            else:
+                logger.warning(
+                    "Shift report failed to send to Telegram — see warnings above"
+                )
     except Exception:
         logger.warning("Failed to send shift report", exc_info=True)
+
+
+def notify_daemon_stopped() -> None:
+    """Send a brief Telegram note that the daemon was stopped.
+
+    Used when the natural shift report already went out and the operator
+    later closes the daemon while it idles — a short ping instead of a
+    duplicate stats dump. Never raises.
+    """
+    try:
+        from linkedin.models import SiteConfig
+        config = SiteConfig.load()
+        token = (config.telegram_bot_token or "").strip()
+        chat_id = (config.telegram_chat_id or "").strip()
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        text = f"🛑 *Daemon stopped at {ts}*"
+        if token and chat_id:
+            if _send_telegram(token, chat_id, text):
+                logger.info("Telegram 'daemon stopped' note sent to %s", chat_id)
+            else:
+                logger.warning(
+                    "Telegram 'daemon stopped' note failed — see warnings above"
+                )
+        else:
+            logger.info(
+                "Telegram not configured (telegram_bot_token/telegram_chat_id empty) "
+                "— skipped 'daemon stopped' push"
+            )
+    except Exception:
+        logger.warning("Failed to send 'daemon stopped' alert", exc_info=True)
+
+

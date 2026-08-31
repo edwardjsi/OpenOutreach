@@ -1,8 +1,10 @@
 # linkedin/daemon.py
 from __future__ import annotations
 
+import atexit
 import logging
 import random
+import signal
 import time
 
 from django.utils import timezone
@@ -29,6 +31,54 @@ _HANDLERS = {
     Task.TaskType.CHECK_PENDING: handle_check_pending,
     Task.TaskType.FOLLOW_UP: handle_follow_up,
 }
+
+
+# ── Exit notification ────────────────────────────────────────────────
+#
+# The daemon's Telegram pushes used to fire only on natural shift
+# completion and LLM API errors. Closing the daemon (Ctrl+C, SIGTERM,
+# crash) silently sent nothing. These hooks send one final push on any
+# interpreter exit: the full shift report if it hasn't been sent yet,
+# otherwise a brief "stopped" note.
+
+
+class _DaemonExitState:
+    session = None
+    shift_started_dt = None
+    shift_reported = False
+    exit_notified = False
+
+
+_exit_state = _DaemonExitState()
+
+
+def _sigterm_handler(signum, frame):
+    """Map SIGTERM (e.g. ``docker compose stop``) to a graceful exit."""
+    raise SystemExit(0)
+
+
+def _final_exit_report():
+    """Runs via atexit on any interpreter exit — stop, crash, or return."""
+    if _exit_state.exit_notified:
+        return
+    _exit_state.exit_notified = True
+    from linkedin.notifications import notify_daemon_stopped, send_daily_report
+    if _exit_state.shift_reported:
+        notify_daemon_stopped()
+    else:
+        send_daily_report(
+            _exit_state.session,
+            since=_exit_state.shift_started_dt,
+            stopped=True,
+        )
+
+
+def _install_exit_hooks(session):
+    """Register the SIGTERM handler + atexit report for this daemon run."""
+    _exit_state.session = session
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    atexit.register(_final_exit_report)
+
 
 HEARTBEAT_INTERVAL = 300  # 5 minutes
 HEARTBEAT_SLICE = 60      # wake every minute during long sleeps
@@ -259,7 +309,8 @@ def run_daemon(session):
     # so sleeping until the next scheduled_at is safe.
     shift_started = time.monotonic()
     shift_started_dt = timezone.now()
-    shift_reported = False
+    _exit_state.shift_started_dt = shift_started_dt
+    _install_exit_hooks(session)
     while True:
         site = SiteConfig.load()
         if site.daemon_halt:
@@ -280,8 +331,8 @@ def run_daemon(session):
             # Shift-scoped summary, fired ONCE per rest period. The loop
             # re-enters this branch every hour while idling; without a
             # guard the report would fire once an hour.
-            if not shift_reported:
-                shift_reported = True
+            if not _exit_state.shift_reported:
+                _exit_state.shift_reported = True
                 from linkedin.notifications import send_daily_report
                 send_daily_report(session, since=shift_started_dt)
 
@@ -369,6 +420,7 @@ def run_daemon(session):
                 + "\n%s\nCheck llm_provider, ai_model, llm_api_key, and llm_api_base in Admin → Site Configuration.", e,
             )
             from linkedin.notifications import notify_error
+            _exit_state.exit_notified = True
             notify_error(
                 session,
                 title="LLM API Error — Daemon Stopped",

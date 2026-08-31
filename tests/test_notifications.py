@@ -241,3 +241,76 @@ class TestSendDailyReport:
         assert "Shift Report" in sent["text"]
         assert "Connects sent: 1" in sent["text"]
         assert "New conversations: 1" in sent["text"]
+
+    def test_stopped_title_and_stats(self):
+        """``stopped=True`` titles the push as a stop but still reports stats.
+
+        Regression: the daemon exits with ``stopped=True`` when it is
+        closed (Ctrl+C / SIGTERM / crash) before the shift completes —
+        the operator must get the same numbers, just a different title.
+        """
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from linkedin.models import ActionLog, Campaign, LinkedInProfile
+        from linkedin.notifications import send_daily_report
+        from tests.factories import UserFactory
+
+        campaign = Campaign.objects.create(name="Stopped Test Campaign")
+        profile = LinkedInProfile.objects.create(
+            user=UserFactory(),
+            linkedin_username="stopped@example.com",
+            linkedin_password="secret",
+        )
+        ActionLog.objects.create(
+            action_type=ActionLog.ActionType.CONNECT,
+            campaign=campaign,
+            linkedin_profile=profile,
+        )
+
+        since = timezone.now() - timedelta(hours=2)
+        config = SiteConfig.load()
+        config.telegram_bot_token = "123:abc"
+        config.telegram_chat_id = "987654"
+
+        sent = {}
+
+        def _capture(token, chat_id, text):
+            sent["text"] = text
+            return True
+
+        with (
+            patch("linkedin.models.SiteConfig.load", return_value=config),
+            patch("linkedin.notifications._send_telegram", side_effect=_capture),
+        ):
+            send_daily_report(session=None, since=since, stopped=True)
+
+        assert "Daemon Stopped" in sent["text"]
+        assert "Connects sent: 1" in sent["text"]
+
+
+@pytest.mark.django_db
+class TestNotifyDaemonStopped:
+    """``notify_daemon_stopped`` sends the brief close ping via Telegram."""
+
+    def test_sends_brief_note(self):
+        from linkedin.notifications import notify_daemon_stopped
+
+        config = SiteConfig.load()
+        config.telegram_bot_token = "123:abc"
+        config.telegram_chat_id = "987654"
+
+        sent = {}
+
+        def _capture(token, chat_id, text):
+            sent["text"] = text
+            return True
+
+        with (
+            patch("linkedin.models.SiteConfig.load", return_value=config),
+            patch("linkedin.notifications._send_telegram", side_effect=_capture),
+        ):
+            notify_daemon_stopped()
+
+        assert "Daemon stopped" in sent["text"]
