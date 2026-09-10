@@ -40,6 +40,18 @@ class SiteConfig(models.Model):
     ai_model = models.CharField(max_length=200, blank=True, default="")
     llm_api_base = models.CharField(max_length=500, blank=True, default="")
 
+    # ── AI Comment Tuning ──
+    ai_persona_prompt = models.TextField(
+        blank=True,
+        default="You are an expert financial planner. Your goal is to react to LinkedIn posts with insightful, professional, and engaging comments that establish your authority and add value.",
+        help_text="The system prompt instructing the LLM on its persona."
+    )
+    ai_tone_prompt = models.TextField(
+        blank=True,
+        default="Write exactly three distinct comments based on these three tones. Keep them max 3 sentences each:\n1. Polite: A standard, polished, and complimentary response.\n2. Contrarian: Politely challenging or offering an alternative perspective to spark debate.\n3. Cheerleading: Enthusiastic support and validation of the author's point or milestone.",
+        help_text="The specific instructions for the 3 tones to generate."
+    )
+
     # ── Work-shift schedule (editable in Admin)
     enable_active_hours = models.BooleanField(
         default=True,
@@ -336,6 +348,7 @@ class Influencer(models.Model):
     linkedin_url = models.URLField(max_length=500, unique=True)
     username = models.CharField(max_length=200, blank=True)
     name = models.CharField(max_length=200, blank=True)
+    is_organic = models.BooleanField(default=False)
     added_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -348,9 +361,11 @@ class Influencer(models.Model):
 
 
 class DraftedComment(models.Model):
-    """Tracks posts we've already drafted comments for to prevent duplicates."""
+    """Tracks posts we've already drafted comments for to prevent duplicates, and stores the drafts."""
     post_urn = models.CharField(max_length=200, unique=True)
     author_name = models.CharField(max_length=200, blank=True)
+    post_url = models.URLField(max_length=500, blank=True)
+    drafts_text = models.TextField(blank=True)
     drafted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

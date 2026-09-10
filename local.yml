@@ -16,5 +16,6 @@ services:
       - HOST_GID=${HOST_GID:-1000}
     volumes:
       - .:/app
+      - ~/.aws:/home/ubuntu/.aws:ro
     ports:
       - "6080:6080"

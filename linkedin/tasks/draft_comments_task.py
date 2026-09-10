@@ -12,24 +12,9 @@ from linkedin.notifications import _send_telegram
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert financial planner. Your goal is to react to LinkedIn posts with insightful, professional, and engaging comments that establish your authority and add value.
-
-Rules:
-- Strictly react to the post content.
-- At most 3 sentences per comment.
-- Do not mention anything about retirement planning.
-- Always capitalize the author's name when addressing them.
-- Format the output clearly as:
-
-Polite:
-[Draft]
-
-Contrarian:
-[Draft]
-
-Cheerleading:
-[Draft]
-"""
+# Default Fallbacks in case config is empty
+DEFAULT_PERSONA = "You are an expert financial planner. Your goal is to react to LinkedIn posts with insightful, professional, and engaging comments that establish your authority and add value."
+DEFAULT_TONES = "Write exactly three distinct comments based on these three tones. Keep them max 3 sentences each:\n1. Polite: A standard, polished, and complimentary response.\n2. Contrarian: Politely challenging or offering an alternative perspective to spark debate.\n3. Cheerleading: Enthusiastic support and validation of the author's point or milestone."
 
 def handle_draft_comments(task, session, qualifiers):
     """
@@ -51,9 +36,10 @@ def handle_draft_comments(task, session, qualifiers):
         return
 
     client = OpenAI(api_key=config.llm_api_key)
+    session.ensure_browser()
     api = PlaywrightLinkedinAPI(session)
     
-    # We will gather a list of posts to process: (post_urn, author_name, post_text, post_url, post_date)
+    # We will gather a list of posts to process: (post_urn, author_name, post_text, post_url, post_date, profile_url)
     posts_to_process = []
     
     # 1. Check explicit Influencers
@@ -95,7 +81,7 @@ def handle_draft_comments(task, session, qualifiers):
         logger.error(f"Error checking home feed: {e}")
 
     # Process all gathered posts
-    for post_urn, author_name, post_text, post_url, post_date in posts_to_process:
+    for post_urn, author_name, post_text, post_url, post_date, profile_url in posts_to_process:
         # Check quota again inside loop
         if DraftedComment.objects.filter(drafted_at__gte=today_start).count() >= 25:
             logger.info("Daily limit of 25 reached during processing.")
@@ -105,11 +91,28 @@ def handle_draft_comments(task, session, qualifiers):
             continue
             
         try:
+            # Auto-save organic influencer if profile_url is provided
+            if profile_url:
+                username = ""
+                match = re.search(r'linkedin\.com/in/([^/]+)', profile_url)
+                if match:
+                    username = match.group(1)
+                if username:
+                    Influencer.objects.get_or_create(
+                        linkedin_url=profile_url,
+                        defaults={"username": username, "name": author_name, "is_organic": True}
+                    )
+
+            # Build full system prompt from config
+            persona = config.ai_persona_prompt or DEFAULT_PERSONA
+            tones = config.ai_tone_prompt or DEFAULT_TONES
+            system_msg = f"{persona}\n\nRules:\n- Strictly react to the post content.\n- At most 3 sentences per comment.\n- Always capitalize the author's name when addressing them.\n\n{tones}"
+
             # Generate comments
             response = client.chat.completions.create(
                 model=config.ai_model or "gpt-4o",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": f"Author: {author_name}\nPost:\n{post_text}"}
                 ],
                 temperature=0.7
@@ -140,8 +143,13 @@ def handle_draft_comments(task, session, qualifiers):
             except ClientError as e:
                 logger.error(f"Error sending SES email: {e.response['Error']['Message']}")
             
-            # Mark as drafted
-            DraftedComment.objects.create(post_urn=post_urn, author_name=author_name)
+            # Mark as drafted and store texts
+            DraftedComment.objects.create(
+                post_urn=post_urn, 
+                author_name=author_name,
+                post_url=post_url,
+                drafts_text=drafts
+            )
             logger.info(f"Successfully drafted comments for post {post_urn} by {author_name}")
             
         except Exception as e:
@@ -174,15 +182,22 @@ def _extract_and_add_posts(data, fallback_author, fallback_url, posts_list):
             if not commentary:
                 continue
                 
-            # Author
+            # Author & Organic Tracking
             actor = item.get("actor") or {}
             author = fallback_author
+            profile_url = fallback_url
+            
             if not author:
                 name_obj = actor.get("name") or {}
                 author = name_obj.get("text", "Unknown Author")
+                
+                # Extract organic profile URL for home feed items
+                nav_target = actor.get("navigationContext", {}).get("actionTarget", "")
+                if "linkedin.com/in/" in nav_target:
+                    profile_url = nav_target.split("?")[0]
                 
             # Date (from accessibility text like '22 hours ago')
             sub_desc = actor.get("subDescription") or {}
             post_date = sub_desc.get("accessibilityText", "Unknown Date")
                 
-            posts_list.append((urn, author, commentary, post_url, post_date))
+            posts_list.append((urn, author, commentary, post_url, post_date, profile_url))
