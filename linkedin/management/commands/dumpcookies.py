@@ -92,32 +92,28 @@ class Command(BaseCommand):
             )
         )
 
-        deadline = time.monotonic() + _DUMP_TIMEOUT_S
-        while time.monotonic() < deadline:
-            current = unquote(page.url)
-            if "/feed" in current:
-                # User is logged in — dump the session
-                state = context.storage_state()
-                lp.cookie_data = state
-                lp.save(update_fields=["cookie_data"])
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"Session saved for {lp} — "
-                        f"{len(state.get('cookies', []))} cookies, "
-                        f"{len(state.get('origins', []))} origins. "
-                        "The daemon will reuse this session on next run."
-                    )
-                )
-                browser.close()
-                return
+        # Wait for the user to press Enter in the terminal
+        try:
+            input(self.style.WARNING("\nPress ENTER in this terminal ONLY AFTER you have successfully logged in and can see the LinkedIn feed in VNC..."))
+        except (KeyboardInterrupt, EOFError):
+            browser.close()
+            raise CommandError("Cancelled by user.")
 
-            if "/login" in current or "/checkpoint/" in current:
-                self.stdout.write(
-                    "Still on login/checkpoint page — waiting… "
-                    f"URL: {current[:80]}"
-                )
-
-            time.sleep(_DUMP_POLL_INTERVAL_S)
+        # User confirmed they are logged in — dump the session
+        state = context.storage_state()
+        lp.cookie_data = state
+        lp.save(update_fields=["cookie_data"])
+        
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"\nSession saved for {lp} — "
+                f"{len(state.get('cookies', []))} cookies, "
+                f"{len(state.get('origins', []))} origins. "
+                "The daemon will reuse this session on next run."
+            )
+        )
+        browser.close()
+        return
 
         # If we get here, it means /feed never loaded
         browser.close()

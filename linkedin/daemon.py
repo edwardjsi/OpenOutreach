@@ -23,6 +23,7 @@ from linkedin.models import SiteConfig, Task
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
 from linkedin.tasks.follow_up import handle_follow_up
+from linkedin.tasks.draft_comments_task import handle_draft_comments
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,10 @@ def run_daemon(session):
     shift_started_dt = timezone.now()
     _exit_state.shift_started_dt = shift_started_dt
     _install_exit_hooks(session)
+    
+    last_draft_time = 0.0
+    next_draft_delay = random.uniform(3600, 10800)
+    
     while True:
         site = SiteConfig.load()
         if site.daemon_halt:
@@ -386,6 +391,22 @@ def run_daemon(session):
             reconcile(session)
 
             wait = Task.objects.seconds_to_next()
+            
+            # ── Background Draft Comments ──
+            # Run drafting ONLY when the main CRM queue is empty (the daemon is sleeping).
+            now = _now()
+            if now - last_draft_time > next_draft_delay:
+                logger.info("Daemon is idle. Running comment drafting in background...")
+                try:
+                    from linkedin.tasks.draft_comments_task import handle_draft_comments
+                    handle_draft_comments(None, session, None)
+                except Exception as e:
+                    logger.exception("Error during background comment drafting: %s", e)
+                last_draft_time = _now()
+                next_draft_delay = random.uniform(3600, 10800)
+                # Re-evaluate the queue immediately after drafting in case tasks became ready
+                continue 
+
             if wait is None:
                 logger.info("Queue empty after reconcile — sleeping 1h")
                 sleep_with_heartbeat(3600, heartbeat, "queue empty")

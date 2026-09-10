@@ -287,6 +287,7 @@ class Task(models.Model):
         CHECK_PENDING = "check_pending"
         FOLLOW_UP = "follow_up"
         LIKE = "like"
+        DRAFT_COMMENTS = "draft_comments"
 
     class Status(models.TextChoices):
         PENDING = "pending"
@@ -328,3 +329,32 @@ class Task(models.Model):
         self.failure_count = self.failure_count + 1
         self.status = self.Status.FAILED
         self.save(update_fields=["status", "failure_count"])
+
+
+class Influencer(models.Model):
+    """List of influencers to explicitly monitor for new posts."""
+    linkedin_url = models.URLField(max_length=500, unique=True)
+    username = models.CharField(max_length=200, blank=True)
+    name = models.CharField(max_length=200, blank=True)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "linkedin"
+        verbose_name = "Influencer"
+        verbose_name_plural = "Influencers"
+
+    def __str__(self):
+        return self.name or self.username or self.linkedin_url
+
+
+class DraftedComment(models.Model):
+    """Tracks posts we've already drafted comments for to prevent duplicates."""
+    post_urn = models.CharField(max_length=200, unique=True)
+    author_name = models.CharField(max_length=200, blank=True)
+    drafted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "linkedin"
+
+    def __str__(self):
+        return f"Draft for {self.post_urn}"

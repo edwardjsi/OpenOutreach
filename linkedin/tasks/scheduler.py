@@ -149,6 +149,24 @@ def enqueue_follow_up(
         )
 
 
+def enqueue_draft_comments(immediate: bool = False) -> None:
+    """Enqueue a draft comments task with a randomized delay (1-3 hours).
+    If immediate=True, schedules it now.
+    """
+    if immediate:
+        delay_seconds = 0.0
+    else:
+        # Randomized timing to stay safely under the radar (1 to 3 hours)
+        delay_seconds = random.uniform(3600, 10800)
+        
+    _insert_task(
+        task_type=Task.TaskType.DRAFT_COMMENTS,
+        payload={},
+        delay_seconds=delay_seconds,
+        dedup_keys=[], # Empty means it dedups purely on task_type=DRAFT_COMMENTS
+    )
+
+
 # ── Delay helpers ─────────────────────────────────────────────────────
 
 
@@ -237,5 +255,5 @@ def reconcile(session) -> None:
     _seed_connect_tasks(session)
     _seed_deal_tasks(session)
 
-    pending_count = Task.objects.pending().count()
+    pending_count = Task.objects.pending().exclude(task_type=Task.TaskType.DRAFT_COMMENTS).count()
     logger.info("Task queue reconciled: %d pending tasks", pending_count)
