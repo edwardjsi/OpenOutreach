@@ -51,12 +51,36 @@ def ingest_signal(
     source: str,
     evidence: Dict[str, Any],
     confidence: float,
-    stable_event_id: str
-) -> Tuple[IntentSignal, Lead, str]:
+    stable_event_id: str,
+    observed_at: Optional[Any] = None
+) -> Tuple[Optional[IntentSignal], Optional[Lead], str]:
     """
     Safely and idempotently ingest an intent signal without modifying
     existing qualification behaviors.
     """
+    # 0. Feature Flag Enforcement
+    # Normal runtime path cannot ingest new signals if the configuration is missing or disabled.
+    from linkedin.intent.models import SignalConfiguration
+    config = getattr(campaign, "signal_config", None)
+    
+    # We check if the overarching signal layer is active for this campaign
+    # (or if this specific signal_type is enabled). For simplicity, we assume
+    # the entire layer is governed by the existence and active status of SignalConfiguration.
+    # We assume 'active=True' or we can check the specific boolean flag if known.
+    # The requirement is that the feature is OFF by default.
+    # If there is no config, the feature is OFF.
+    if not config or not config.enabled:
+        logger.info("SIGNAL_SKIPPED: High-Intent Signal Layer OFF for campaign %s", campaign.pk)
+        return None, None, "DISABLED"
+        
+    # Example: Check if the specific signal type is enabled
+    # Map SignalType to the config boolean fields if they exist
+    # If the user hasn't explicitly enabled this signal agent, we skip.
+    flag_field = f"{signal_type}_enabled"
+    if hasattr(config, flag_field) and not getattr(config, flag_field):
+        logger.info("SIGNAL_SKIPPED: %s is OFF for campaign %s", signal_type, campaign.pk)
+        return None, None, "DISABLED"
+
     # 1. Application-level validation
     if not (0.0 <= confidence <= 1.0):
         logger.warning("SIGNAL_REJECTED: Invalid confidence %s for url %s", confidence, linkedin_url)
@@ -71,7 +95,7 @@ def ingest_signal(
         # Note: We continue creating the signal for telemetry purposes, 
         # but the candidate won't enter downstream paths because existing
         # ReadyPools filter out disqualified=True.
-        logger.info("SIGNAL_SKIPPED: Candidate %s is disqualified.", subject_id)
+        logger.info("SIGNAL_FOR_DISQUALIFIED_CANDIDATE: Candidate %s is disqualified.", subject_id)
         
     # 3. Deduplication Logic
     dedupe_key = build_dedupe_key(subject_id, signal_type, stable_event_id)
@@ -89,16 +113,19 @@ def ingest_signal(
     try:
         # Must be atomic so the IntegrityError doesn't break the outer transaction
         with transaction.atomic():
-            new_signal = IntentSignal.objects.create(
-                campaign=campaign,
-                signal_type=signal_type,
-                subject_id=subject_id,
-                source=source,
-                evidence=evidence,
-                confidence=confidence,
-                dedupe_key=dedupe_key,
-                # observed_at defaults to timezone.now() but could be parameterized
-            )
+            kwargs = {
+                "campaign": campaign,
+                "signal_type": signal_type,
+                "subject_id": subject_id,
+                "source": source,
+                "evidence": evidence,
+                "confidence": confidence,
+                "dedupe_key": dedupe_key,
+            }
+            if observed_at is not None:
+                kwargs["observed_at"] = observed_at
+                
+            new_signal = IntentSignal.objects.create(**kwargs)
             logger.info("SIGNAL_CREATED: Ingested new signal %s for %s", signal_type, subject_id)
             return new_signal, lead, "CREATED"
             
