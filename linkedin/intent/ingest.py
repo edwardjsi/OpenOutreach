@@ -129,10 +129,17 @@ def ingest_signal(
             logger.info("SIGNAL_CREATED: Ingested new signal %s for %s", signal_type, subject_id)
             return new_signal, lead, "CREATED"
             
-    except IntegrityError:
-        # We hit a race condition, another worker created the exact dedupe_key
+    except IntegrityError as e:
+        # We might have hit a race condition where another worker created the exact dedupe_key.
+        # To verify this is an EXPECTED unique constraint race, we check if the signal now exists.
+        raced_existing = IntentSignal.objects.filter(campaign=campaign, dedupe_key=dedupe_key).first()
+        
+        if not raced_existing:
+            # UNEXPECTED: The IntegrityError was caused by something else (e.g. missing foreign key).
+            # Do NOT silently treat it as deduplication.
+            raise e
+            
         logger.info("SIGNAL_DEDUPLICATED: Race detected, re-fetching signal %s", dedupe_key)
-        raced_existing = IntentSignal.objects.get(campaign=campaign, dedupe_key=dedupe_key)
         raced_existing.last_seen_at = timezone.now()
         raced_existing.save(update_fields=["last_seen_at"])
         return raced_existing, lead, "DEDUPLICATED"

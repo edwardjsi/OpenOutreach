@@ -206,7 +206,18 @@ class TestIntentIngestion:
             linkedin_url=url, source="News", evidence={}, confidence=1.0, stable_event_id="race:1"
         )
         
-        with patch("django.db.models.query.QuerySet.first", return_value=None):
+        import django
+        original_first = django.db.models.query.QuerySet.first
+        
+        call_count = 0
+        def fake_first(qs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return None
+            return original_first(qs)
+        
+        with patch("django.db.models.query.QuerySet.first", fake_first):
             sig2, _, status = ingest_signal(
                 campaign=campaign, signal_type=IntentSignal.SignalType.FUNDING,
                 linkedin_url=url, source="News", evidence={}, confidence=1.0, stable_event_id="race:1"
@@ -217,16 +228,12 @@ class TestIntentIngestion:
 
     # E2. Genuine concurrency test
     def test_genuine_concurrent_ingestion(self, campaign):
-        url = "https://www.linkedin.com/in/conc-guy"
-        
-        # SQLite cannot handle genuine concurrent writes well and will throw 
-        # OperationalError ("database table is locked") when we use threads in tests.
-        # We document this limitation here. The strongest deterministic test for the 
-        # race condition is test_integrity_error_deduplication_fallback above.
         from django.db import connection
         if connection.vendor == 'sqlite':
             pytest.skip("SQLite test database does not reliably support concurrent threads without locking.")
             
+        url = "https://www.linkedin.com/in/conc-guy"
+        
         def run_ingest():
             import django
             django.db.close_old_connections()
@@ -249,4 +256,19 @@ class TestIntentIngestion:
         
         # Ensure results contain exactly one "CREATED" and four "DEDUPLICATED"
         assert "CREATED" in results
+        assert results.count("DEDUPLICATED") == 4
+
+    # E3. Unexpected IntegrityError propagates
+    def test_unexpected_integrity_error_propagates(self, campaign):
+        url = "https://www.linkedin.com/in/bad-race"
+        
+        # We mock .create() to throw a completely unrelated IntegrityError
+        with patch("linkedin.intent.models.IntentSignal.objects.create") as mock_create:
+            mock_create.side_effect = IntegrityError("FOREIGN KEY constraint failed")
+            
+            with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed"):
+                ingest_signal(
+                    campaign=campaign, signal_type=IntentSignal.SignalType.FUNDING,
+                    linkedin_url=url, source="News", evidence={}, confidence=1.0, stable_event_id="bad-race:1"
+                )
 
