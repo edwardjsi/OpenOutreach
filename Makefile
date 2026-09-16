@@ -19,6 +19,9 @@ run: ## run the daemon
 dumpcookies: ## dump your real browser session (saves to DB — daemon never logs in again)
 	.venv/bin/python manage.py dumpcookies --profile 1
 
+draft: ## run the background comment drafting manually
+	docker compose -f local.yml exec -u ubuntu -e DISPLAY=:99 app python run_test_drafts.py
+
 test: ## run the test suite
 	.venv/bin/pytest
 

@@ -24,6 +24,7 @@ from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
 from linkedin.tasks.follow_up import handle_follow_up
 from linkedin.tasks.draft_comments_task import handle_draft_comments
+from linkedin.tasks.classify_influencers import handle_classify_influencers
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ _HANDLERS = {
     Task.TaskType.CONNECT: handle_connect,
     Task.TaskType.CHECK_PENDING: handle_check_pending,
     Task.TaskType.FOLLOW_UP: handle_follow_up,
+    Task.TaskType.DRAFT_COMMENTS: handle_draft_comments,
 }
 
 
@@ -299,6 +301,11 @@ def work_shift_active(config, started_at: float) -> bool:
     """
     if not config.enable_active_hours:
         return True
+        
+    from django.utils import timezone
+    if config.last_shift_completed_date == timezone.now().date():
+        return False
+        
     shift_seconds = float(config.work_shift_hours or 0) * 3600.0
     return _now() - started_at < shift_seconds
 
@@ -367,6 +374,12 @@ def run_daemon(session):
             # guard the report would fire once an hour.
             if not _exit_state.shift_reported:
                 _exit_state.shift_reported = True
+                
+                # Enforce the daily limit so it won't run again today if restarted
+                from django.utils import timezone
+                site.last_shift_completed_date = timezone.now().date()
+                site.save(update_fields=['last_shift_completed_date'])
+
                 from linkedin.notifications import send_daily_report
                 send_daily_report(session, since=shift_started_dt)
 
@@ -384,27 +397,23 @@ def run_daemon(session):
 
         task = Task.objects.claim_next()
         if task is None:
-            # Nothing ready — reconcile the queue from CRM state. Any deal
-            # stuck without a pending task (e.g. because a prior handler
-            # crashed) gets a fresh task here; this is the retry mechanism.
+            # Nothing ready — reconcile the queue from CRM state.
             from linkedin.tasks.scheduler import reconcile
             reconcile(session)
-
             wait = Task.objects.seconds_to_next()
             
-            # ── Background Draft Comments ──
+            # ── Background Draft Comments / Classification ──
             # Run drafting ONLY when the main CRM queue is empty (the daemon is sleeping).
             now = _now()
             if now - last_draft_time > next_draft_delay:
-                logger.info("Daemon is idle. Running comment drafting in background...")
+                logger.info("Daemon is idle. Running influencer classification in background...")
                 try:
-                    from linkedin.tasks.draft_comments_task import handle_draft_comments
-                    handle_draft_comments(None, session, None)
+                    from linkedin.tasks.classify_influencers import handle_classify_influencers
+                    handle_classify_influencers(session)
                 except Exception as e:
-                    logger.exception("Error during background comment drafting: %s", e)
+                    logger.exception("Error during background influencer classification: %s", e)
                 last_draft_time = _now()
                 next_draft_delay = random.uniform(3600, 10800)
-                # Re-evaluate the queue immediately after drafting in case tasks became ready
                 continue 
 
             if wait is None:
@@ -415,11 +424,7 @@ def run_daemon(session):
             if wait > 0:
                 h, m = int(wait // 3600), int(wait % 3600 // 60)
                 logger.info("Next task in %dh%02dm — sleeping", h, m)
-                sleep_with_heartbeat(
-                    wait,
-                    heartbeat,
-                    lambda remaining: f"next task in {_fmt_remaining(remaining)}",
-                )
+                sleep_with_heartbeat(wait, heartbeat, lambda remaining: f"next task in {_fmt_remaining(remaining)}")
                 rhythm.reset()
             continue
 

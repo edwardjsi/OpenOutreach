@@ -48,7 +48,7 @@ class SiteConfig(models.Model):
     )
     ai_tone_prompt = models.TextField(
         blank=True,
-        default="Write exactly three distinct comments based on these three tones. Keep them max 3 sentences each:\n1. Polite: A standard, polished, and complimentary response.\n2. Contrarian: Politely challenging or offering an alternative perspective to spark debate.\n3. Cheerleading: Enthusiastic support and validation of the author's point or milestone.",
+        default="Write exactly three distinct comments based on these three tones. Keep them max 3 sentences each:\n1. Polite: A standard, polished, and complimentary response.\n2. Contrarian: Politely challenging or offering an alternative perspective to spark debate. DO NOT start with 'While I' or use repetitive opening phrases. Vary your approach significantly each time.\n3. Cheerleading: Enthusiastic support and validation of the author's point or milestone.",
         help_text="The specific instructions for the 3 tones to generate."
     )
 
@@ -57,6 +57,8 @@ class SiteConfig(models.Model):
         default=True,
         help_text="Limit the daemon to a work shift per start; uncheck for 24/7.",
     )
+    last_shift_completed_date = models.DateField(null=True, blank=True, help_text="Date when the daemon last completed a full shift.")
+
     work_shift_hours = models.PositiveSmallIntegerField(
         default=2,
         help_text="Hours the daemon works from the moment it starts; "
@@ -345,10 +347,19 @@ class Task(models.Model):
 
 class Influencer(models.Model):
     """List of influencers to explicitly monitor for new posts."""
+    GROUP_CHOICES = [
+        ('daily', 'Daily Posters'),
+        ('regular', 'Regular Posters (Coupla times a week)'),
+        ('rare', 'Rare Posters'),
+    ]
     linkedin_url = models.URLField(max_length=500, unique=True)
     username = models.CharField(max_length=200, blank=True)
     name = models.CharField(max_length=200, blank=True)
     is_organic = models.BooleanField(default=False)
+    engagement_group = models.CharField(max_length=20, choices=GROUP_CHOICES, default='regular')
+    follower_count = models.IntegerField(null=True, blank=True)
+    avg_comments = models.FloatField(null=True, blank=True)
+    last_classified_at = models.DateTimeField(null=True, blank=True)
     added_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

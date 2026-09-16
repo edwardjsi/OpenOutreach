@@ -2,8 +2,10 @@ import os
 import sys
 import django
 
+import logging
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "linkedin.django_settings")
 django.setup()
+logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 from linkedin.browser.registry import get_first_active_profile
 from linkedin.browser.session import AccountSession

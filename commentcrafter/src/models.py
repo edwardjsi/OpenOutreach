@@ -189,6 +189,11 @@ def insert_post(author_name: str, text: str, url: str | None = None,
                 source: str = "feed") -> int | None:
     with tx() as conn:
         try:
+            if url:
+                row = conn.execute("SELECT id FROM posts WHERE url=?", (url,)).fetchone()
+                if row:
+                    return None
+            
             cur = conn.execute(
                 """INSERT INTO posts
                    (author_name, author_urn, post_urn, text, url, source)
