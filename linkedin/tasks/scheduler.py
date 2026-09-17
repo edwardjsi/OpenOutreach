@@ -122,6 +122,25 @@ def enqueue_follow_up(
     )
 
 
+def enqueue_source_signals(
+    campaign_id: int,
+    agent_name: str,
+    target_id: str,
+    delay_seconds: float = 0,
+) -> None:
+    """Enqueue a source_signals task for a specific agent and target."""
+    _insert_task(
+        task_type=Task.TaskType.SOURCE_SIGNALS,
+        payload={
+            "campaign_id": campaign_id,
+            "agent": agent_name,
+            "target_id": target_id,
+        },
+        delay_seconds=delay_seconds,
+        dedup_keys=["campaign_id", "agent", "target_id"],
+    )
+
+
 # ── Delay helpers ─────────────────────────────────────────────────────
 
 
