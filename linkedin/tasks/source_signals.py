@@ -24,11 +24,15 @@ def handle_source_signals(task: Task, session, qualifiers: dict) -> None:
     target_id = payload.get("target_id")
 
     if not campaign_id or not agent_name or not target_id:
+        task.payload["retryable"] = False
+        task.save(update_fields=["payload"])
         logger.error(f"Invalid SOURCE_SIGNALS payload: {payload}")
         raise ValueError(f"Invalid SOURCE_SIGNALS payload: {payload}")
 
     agent_class = AGENT_REGISTRY.get(agent_name)
     if not agent_class:
+        task.payload["retryable"] = False
+        task.save(update_fields=["payload"])
         logger.error(f"Unknown or deferred agent requested: {agent_name}")
         raise ValueError(f"Unknown or deferred agent requested: {agent_name}")
 

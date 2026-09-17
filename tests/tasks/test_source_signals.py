@@ -146,6 +146,23 @@ def test_real_retry_via_reconcile(mock_session):
     task.refresh_from_db()
     assert task.status == Task.Status.PENDING
 
+@pytest.mark.django_db
+def test_non_retryable_failure_remains_failed(mock_session):
+    # Proves that a FAILED source_signals task with retryable=False is NOT recovered
+    enqueue_source_signals(campaign_id=778, agent_name="top_icp", target_id="fail_user_non_retry")
+    task = Task.objects.get(task_type=Task.TaskType.SOURCE_SIGNALS, payload__campaign_id=778)
+    
+    # Simulate handler marking it as non-retryable and daemon marking FAILED
+    task.payload["retryable"] = False
+    task.status = Task.Status.FAILED
+    task.save()
+    
+    mock_session.campaigns = []
+    reconcile(mock_session)
+    
+    task.refresh_from_db()
+    assert task.status == Task.Status.FAILED
+
 def test_enqueue_source_signals_rejects_invalid_agents():
     # Ensure enqueue contract rejects unknown/deferred agents
     with pytest.raises(ValueError, match="is unknown or deferred"):

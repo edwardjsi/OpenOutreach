@@ -207,10 +207,16 @@ def _recover_failed_source_signals_tasks() -> int:
     due to unexpected exceptions, ensuring they are eventually re-evaluated 
     using the existing task lifecycle.
     """
-    count = Task.objects.filter(
+    count = 0
+    failed_tasks = Task.objects.filter(
         task_type=Task.TaskType.SOURCE_SIGNALS,
         status=Task.Status.FAILED
-    ).update(status=Task.Status.PENDING)
+    )
+    for task in failed_tasks:
+        if task.payload.get("retryable", True) is not False:
+            task.status = Task.Status.PENDING
+            task.save(update_fields=["status"])
+            count += 1
     
     if count:
         logger.info("Recovered %d failed source_signals tasks", count)
