@@ -128,7 +128,14 @@ def enqueue_source_signals(
     target_id: str,
     delay_seconds: float = 0,
 ) -> None:
-    """Enqueue a source_signals task for a specific agent and target."""
+    """Enqueue a source_signals task for a specific agent and target.
+    
+    Only explicitly approved agents are permitted. Unknown or deferred
+    agents are rejected.
+    """
+    if agent_name not in ("top_icp", "job_change"):
+        raise ValueError(f"Agent '{agent_name}' is unknown or deferred and cannot be enqueued.")
+        
     _insert_task(
         task_type=Task.TaskType.SOURCE_SIGNALS,
         payload={
@@ -193,6 +200,23 @@ def _recover_stale_running_tasks() -> int:
     return count
 
 
+def _recover_failed_source_signals_tasks() -> int:
+    """Reset FAILED SOURCE_SIGNALS tasks to PENDING.
+    
+    This provides the retry mechanism for source_signals tasks that failed 
+    due to unexpected exceptions, ensuring they are eventually re-evaluated 
+    using the existing task lifecycle.
+    """
+    count = Task.objects.filter(
+        task_type=Task.TaskType.SOURCE_SIGNALS,
+        status=Task.Status.FAILED
+    ).update(status=Task.Status.PENDING)
+    
+    if count:
+        logger.info("Recovered %d failed source_signals tasks", count)
+    return count
+
+
 def _seed_connect_tasks(session) -> None:
     """Ensure every campaign has a pending connect task."""
     for campaign in session.campaigns:
@@ -226,6 +250,7 @@ def reconcile(session) -> None:
     FAILED task with no successor).
     """
     _recover_stale_running_tasks()
+    _recover_failed_source_signals_tasks()
     _seed_connect_tasks(session)
     _seed_deal_tasks(session)
 
