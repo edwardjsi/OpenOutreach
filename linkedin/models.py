@@ -227,6 +227,7 @@ class Task(models.Model):
         CONNECT = "connect"
         CHECK_PENDING = "check_pending"
         FOLLOW_UP = "follow_up"
+        SOURCE_SIGNALS = "source_signals"
 
     class Status(models.TextChoices):
         PENDING = "pending"
@@ -266,3 +267,4 @@ class Task(models.Model):
     def mark_failed(self):
         self.status = self.Status.FAILED
         self.save(update_fields=["status"])
+from linkedin.intent.models import IntentSignal, SignalConfiguration, CompetitorTarget, InfluencerTarget, CompanyTarget

@@ -98,7 +98,7 @@ def playwright_login(session: "AccountSession"):
 def launch_browser(storage_state=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False, slow_mo=BROWSER_SLOW_MO)
+    browser = playwright.chromium.launch(headless=True, slow_mo=BROWSER_SLOW_MO)
     context = browser.new_context(storage_state=storage_state)
     context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)

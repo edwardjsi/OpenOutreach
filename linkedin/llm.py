@@ -90,10 +90,10 @@ def run_agent_sync(coro: Awaitable[_T]) -> _T:
 
 def _build_openai(cfg):
     from openai import AsyncOpenAI
-    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
     client = AsyncOpenAI(api_key=cfg.llm_api_key, max_retries=_MAX_RETRIES)
-    return OpenAIModel(cfg.ai_model, provider=OpenAIProvider(openai_client=client))
+    return OpenAIChatModel(cfg.ai_model, provider=OpenAIProvider(openai_client=client))
 
 
 def _build_anthropic(cfg):
@@ -133,9 +133,9 @@ def _build_cohere(cfg):
 def _build_openai_compatible(cfg):
     if not cfg.llm_api_base:
         raise ValueError("LLM_API_BASE is required for the openai_compatible provider.")
-    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
-    return OpenAIModel(cfg.ai_model, provider=OpenAIProvider(
+    return OpenAIChatModel(cfg.ai_model, provider=OpenAIProvider(
         base_url=cfg.llm_api_base, api_key=cfg.llm_api_key,
     ))
 

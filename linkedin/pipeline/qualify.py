@@ -31,7 +31,23 @@ def fetch_qualification_candidates(session):
         return candidates
 
     # Robustness fallback: embed any lead that was missed at discovery time
-    for ld in leads:
+    # Prioritize sparse leads that have an IntentSignal for this campaign
+    from linkedin.intent.models import IntentSignal
+    
+    campaign = session.campaign
+    config = getattr(campaign, "signal_config", None)
+    
+    signal_pids = set()
+    if config is not None and config.enabled is True:
+        signal_pids = set(IntentSignal.objects.filter(campaign=campaign).values_list('subject_id', flat=True))
+        
+    def fallback_priority(ld):
+        has_signal = ld.get("public_identifier") in signal_pids
+        return (not has_signal, ld.get("lead_id"))
+
+    sorted_leads = sorted(leads, key=fallback_priority)
+
+    for ld in sorted_leads:
         lead = Lead.objects.filter(pk=ld["lead_id"]).first()
         if not lead or lead.embedding is not None:
             continue
@@ -90,11 +106,14 @@ def run_qualification(session, qualifier: BayesianQualifier) -> str | None:
         _save_qualification_result(session, qualifier, lead_id, public_id, embedding, 0, "no profile text available")
         return public_id
 
+    intent_signals = _fetch_intent_signals_text(session, public_id)
+
     campaign = session.campaign
     label, reason = qualify_with_llm(
         profile_text,
         product_docs=campaign.product_docs,
         campaign_objective=campaign.campaign_objective,
+        intent_signals=intent_signals,
     )
     _save_qualification_result(session, qualifier, lead_id, public_id, embedding, label, reason)
     return public_id
@@ -131,3 +150,24 @@ def _fetch_profile_text(session, lead_id: int, public_id: str) -> str | None:
     if not profile_data:
         return None
     return build_profile_text({"profile": profile_data})
+
+def _fetch_intent_signals_text(session, public_id: str) -> str:
+    from linkedin.intent.models import IntentSignal
+    
+    campaign = session.campaign
+    config = getattr(campaign, "signal_config", None)
+    
+    if config is None or config.enabled is not True:
+        return ""
+        
+    signals = IntentSignal.objects.filter(campaign=campaign, subject_id=public_id).order_by('first_seen_at')
+        
+    lines = []
+    for sig in signals:
+        lines.append(f"- Type: {sig.get_signal_type_display()}")
+        lines.append(f"  Source: {sig.source}")
+        if sig.evidence:
+            lines.append(f"  Evidence: {sig.evidence}")
+        lines.append("")
+        
+    return "\n".join(lines).strip()

@@ -27,6 +27,7 @@ from linkedin.models import Task
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
 from linkedin.tasks.follow_up import handle_follow_up
+from linkedin.tasks.source_signals import handle_source_signals
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ _HANDLERS = {
     Task.TaskType.CONNECT: handle_connect,
     Task.TaskType.CHECK_PENDING: handle_check_pending,
     Task.TaskType.FOLLOW_UP: handle_follow_up,
+    Task.TaskType.SOURCE_SIGNALS: handle_source_signals,
 }
 
 HEARTBEAT_INTERVAL = 300  # 5 minutes

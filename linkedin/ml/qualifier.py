@@ -44,7 +44,7 @@ class QualificationDecision(BaseModel):
     reason: str = Field(description="Brief explanation for the decision")
 
 
-def qualify_with_llm(profile_text: str, product_docs: str, campaign_objective: str) -> tuple[int, str]:
+def qualify_with_llm(profile_text: str, product_docs: str, campaign_objective: str, intent_signals: str = "") -> tuple[int, str]:
     """Call LLM to qualify a profile. Returns (label, reason).
 
     label: 1 = accept, 0 = reject.
@@ -60,6 +60,7 @@ def qualify_with_llm(profile_text: str, product_docs: str, campaign_objective: s
         product_docs=product_docs,
         campaign_objective=campaign_objective,
         profile_text=profile_text,
+        intent_signals=intent_signals,
     )
 
     agent = Agent(
