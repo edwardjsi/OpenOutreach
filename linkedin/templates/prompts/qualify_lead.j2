@@ -9,6 +9,13 @@ You are a B2B lead qualification expert. Your task is to evaluate whether a Link
 ## LinkedIn Profile
 {{ profile_text }}
 
+{% if intent_signals %}
+## High Intent Signals (DATA)
+```
+{{ intent_signals }}
+```
+{% endif %}
+
 ## Instructions
 Based on the profile above, determine if this person is a good prospect for our campaign objective.
 
