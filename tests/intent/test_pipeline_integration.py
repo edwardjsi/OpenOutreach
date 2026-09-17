@@ -196,3 +196,41 @@ def test_existing_behavior_disabled(session, config, sparse_lead1, sparse_lead2)
             # (which was sparse1 then sparse2). So sparse1 should be returned.
             assert len(candidates) == 1
             assert candidates[0].public_identifier == sparse_lead1.public_identifier
+
+@pytest.mark.django_db
+def test_run_qualification_end_to_end_integration(session, config, sparse_lead2):
+    # Integration test for run_qualification to ensure qualify_with_llm receives intent_signals
+    IntentSignal.objects.create(
+        campaign=session.campaign,
+        signal_type=IntentSignal.SignalType.TOP_ICP,
+        subject_id=sparse_lead2.public_identifier,
+        source="Test Source",
+        evidence={"foo": "bar"},
+        dedupe_key="1"
+    )
+    
+    qualifier_mock = MagicMock()
+    qualifier_mock.model_blob = b"mock"
+    qualifier_mock.predict.return_value = None
+
+    with (
+        patch("linkedin.pipeline.qualify.fetch_qualification_candidates", return_value=[sparse_lead2]),
+        patch("linkedin.pipeline.qualify._fetch_profile_text", return_value="Profile of sparse2"),
+        patch("linkedin.ml.qualifier.qualify_with_llm", return_value=(1, "Good")) as mock_llm,
+        patch("linkedin.pipeline.qualify._save_qualification_result")
+    ):
+        from linkedin.pipeline.qualify import run_qualification
+        run_qualification(session, qualifier_mock)
+        
+        mock_llm.assert_called_once()
+        kwargs = mock_llm.call_args.kwargs
+        assert "Test Source" in kwargs.get("intent_signals", "")
+        
+        # Test feature flag OFF
+        mock_llm.reset_mock()
+        config.enabled = False
+        config.save()
+        run_qualification(session, qualifier_mock)
+        mock_llm.assert_called_once()
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs.get("intent_signals", "") == ""

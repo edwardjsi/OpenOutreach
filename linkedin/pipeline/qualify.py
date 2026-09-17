@@ -161,8 +161,6 @@ def _fetch_intent_signals_text(session, public_id: str) -> str:
         return ""
         
     signals = IntentSignal.objects.filter(campaign=campaign, subject_id=public_id).order_by('first_seen_at')
-    if not signals.exists():
-        return ""
         
     lines = []
     for sig in signals:
